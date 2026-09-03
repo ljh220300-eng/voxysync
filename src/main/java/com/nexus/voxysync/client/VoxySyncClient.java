@@ -71,6 +71,8 @@ public final class VoxySyncClient {
     /** 导入状态轮询计数（诊断：提示导入进行/完成） */
     private static volatile int importWatchTicks;
     private static volatile int importWatchNotified;
+    /** 历史存量补齐导入是否已触发（避免每次进服重复触发） */
+    private static volatile boolean catchUpImportAttempted;
     private static final Map<String, RegionAssembly> assemblies = new ConcurrentHashMap<>();
     private static final ExecutorService VOXY_IO_WORKER = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "voxysync-client-io");
@@ -126,6 +128,10 @@ public final class VoxySyncClient {
             }
             // 收到能力后，若启用且当前维度还没尝试过 → 自动发起（含重试）
             scheduleAutoStart(client);
+            // 0.0.9: 历史存量补齐导入（稳定目录有文件且从未全量导入过）
+            if (serverEnabled) {
+                tryCatchUpImport(client);
+            }
         });
     }
 
@@ -390,8 +396,31 @@ public final class VoxySyncClient {
                 }
                 return;
             }
+            // 0.0.9 修复：先合并本次会话文件到稳定目录；
+            // 首次全量导入稳定目录（含历史所有会话下载的文件），之后只导增量。
             Path importRegionDir = regionDir;
-            client.execute(() -> finishImportOnClient(client, importRegionDir));
+            try {
+                if (stableRegionDir != null && Files.isDirectory(stableRegionDir)
+                        && regionDir != null && Files.isDirectory(regionDir)) {
+                    try (var stream = Files.newDirectoryStream(regionDir, "*.mca")) {
+                        for (Path f : stream) {
+                            Path target = stableRegionDir.resolve(f.getFileName().toString());
+                            if (!Files.exists(target)) {
+                                Files.move(f, target, StandardCopyOption.REPLACE_EXISTING);
+                            }
+                        }
+                    }
+                    Path marker = stableRegionDir.resolve(".full-import-done");
+                    if (!Files.exists(marker)) {
+                        importRegionDir = stableRegionDir; // 首次：把全部历史文件交给 Voxy
+                    }
+                    // 若 marker 已存在：importRegionDir 仍为本次新文件（增量导入）
+                }
+            } catch (IOException mergeEx) {
+                LOGGER.warn("合并暂存目录失败，直接导入本会话文件", mergeEx);
+            }
+            final Path finalImportDir = importRegionDir;
+            client.execute(() -> finishImportOnClient(client, finalImportDir));
         });
     }
 
@@ -446,6 +475,53 @@ public final class VoxySyncClient {
 
     // ---------- 自动同步 / 维度切换（由客户端 mod 每 tick / 进服事件驱动） ----------
 
+    /**
+     * 0.0.9：历史存量补齐导入。
+     * 旧版本把已下载文件都放在稳定目录里但从未导入；此方法在进服时检查：
+     * 稳定目录有 *.mca 且没有全量导入标记 → 直接把整个稳定目录交给 Voxy 导入一次。
+     */
+    private static void tryCatchUpImport(Minecraft client) {
+        try {
+            if (catchUpImportAttempted || client.level == null || client.player == null) {
+                return;
+            }
+            Path dimRoot = client.gameDirectory.toPath().resolve("voxysync").resolve("staging")
+                    .resolve(safeName(currentDimensionId(client) != null ? currentDimensionId(client) : "overworld"));
+            Path stable = dimRoot.resolve("region");
+            if (!Files.isDirectory(stable) || Files.exists(stable.resolve(".full-import-done"))) {
+                return;
+            }
+            long count;
+            try (var stream = Files.newDirectoryStream(stable, "*.mca")) {
+                count = 0;
+                for (Path ignored : stream) {
+                    count++;
+                }
+            }
+            if (count == 0) {
+                return;
+            }
+            if (syncing || "importing".equals(status) || "import_started".equals(status)) {
+                return; // 等同步/导入结束后由下次触发
+            }
+            catchUpImportAttempted = true;
+            IVoxyBridge bridge = VoxyBridgeLoader.getBridge();
+            if (bridge == null) {
+                return;
+            }
+            if (!bridge.startImport(client, stable)) {
+                return; // 导入器忙：下次再试
+            }
+            status = "import_started";
+            importWatchTicks = 0;
+            importWatchNotified = 0;
+            notifyPlayer(client, "§a[VoxySync] 检测到历史下载数据，正在补全 Voxy 导入（约几分钟，完成后会提示）……");
+            LOGGER.info("[VoxySync] 历史存量补齐导入启动: {} 个区域", count);
+        } catch (Throwable t) {
+            LOGGER.warn("[VoxySync] 历史补齐导入失败", t);
+        }
+    }
+
     /** 每次进服或维度变化后调用（在客户端线程） */
     public static void onWorldAvailable(Minecraft client) {
         if (client.level == null || client.player == null) {
@@ -488,6 +564,13 @@ public final class VoxySyncClient {
                                 Component.literal("§7[VoxySync] Voxy 导入中（已 " + seconds + " 秒），完成后远处地形即可看见"), false);
                     } else if (!busy) {
                         status = "import_done";
+                        // 全量导入完成 → 写入标记，后续会话只导增量
+                        try {
+                            if (stableRegionDir != null && Files.isDirectory(stableRegionDir)) {
+                                Files.writeString(stableRegionDir.resolve(".full-import-done"), "1");
+                            }
+                        } catch (IOException ignored) {
+                        }
                         client.player.displayClientMessage(
                                 Component.literal("§a[VoxySync] Voxy 导入完成！请飞到高处看向地平线验证远处地形（若仍无变化请把本消息截图给我）"), false);
                     }
@@ -546,6 +629,7 @@ public final class VoxySyncClient {
 
     /** 断线/退出时重置自动同步状态（保留 staging 与缓存，实现断点续传） */
     public static void onDisconnect() {
+        catchUpImportAttempted = false;
         requestedDimension = "";
         autoAttemptedDimension = "";
         autoAttempts = 0;
