@@ -61,7 +61,11 @@ public final class VoxySyncClient {
 
     private static Path stagingRoot;
     private static Path regionDir;
+    /** 稳定暂存目录（staging/<维度>/region）：跨会话保留已完成的区域文件 */
+    private static Path stableRegionDir;
     private static VoxySyncCache cache;
+    /** 距上次持久化缓存已完成的区域数 */
+    private static int completedSinceSave;
     private static final Map<String, RegionAssembly> assemblies = new ConcurrentHashMap<>();
     private static final ExecutorService VOXY_IO_WORKER = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "voxysync-client-io");
@@ -258,14 +262,19 @@ public final class VoxySyncClient {
         totalBytes = payload.totalBytes();
         status = "downloading";
         try {
-            stagingRoot = client.gameDirectory.toPath()
+            Path dimRoot = client.gameDirectory.toPath()
                     .resolve("voxysync")
                     .resolve("staging")
-                    .resolve(safeName(dimensionId))
-                    .resolve(syncId);
+                    .resolve(safeName(dimensionId));
+            // 跨会话持续同步：把之前会话目录里已完成的区域文件并入稳定目录（0.1.2）
+            stableRegionDir = dimRoot.resolve("region");
+            Files.createDirectories(stableRegionDir);
+            migrateOldSessionFiles(dimRoot, stableRegionDir);
+            // 当前会话目录（只装本次新下载的区域，导入也只导这些）
+            stagingRoot = dimRoot.resolve(syncId);
             regionDir = stagingRoot.resolve("region");
-            deleteDirectory(stagingRoot);
             Files.createDirectories(regionDir);
+            completedSinceSave = 0;
         } catch (IOException e) {
             LOGGER.error("准备 Voxy staging 目录失败", e);
             fail("client_io_failed");
@@ -303,6 +312,12 @@ public final class VoxySyncClient {
                 moveCompletedRegion(partPath, finalPath);
                 if (cache != null) {
                     cache.update(payload.dimensionId(), fileName, payload.timestampSeconds(), payload.totalBytes());
+                    // 周期性持久化：即便中途退出/断线，已完成区域下次可跳过
+                    completedSinceSave++;
+                    if (completedSinceSave >= 25) {
+                        cache.save();
+                        completedSinceSave = 0;
+                    }
                 }
                 assemblies.remove(fileName);
             }
@@ -340,7 +355,10 @@ public final class VoxySyncClient {
                     notifyPlayer(client, "§e[VoxySync] 60 秒后自动重试…");
                 }
                 syncing = false;
-                cleanupFailedSyncFiles();
+                // 保留已下载区域与缓存（0.1.2：断点续传），下次重进自动跳过
+                if (cache != null) {
+                    cache.save();
+                }
                 return;
             }
 
@@ -351,14 +369,15 @@ public final class VoxySyncClient {
                 status = "completed";
                 notifyPlayer(client, "§a[VoxySync] 世界数据已是最新，无需同步");
                 syncing = false;
-                cleanupPartialFiles();
                 return;
             }
             if (!assemblies.isEmpty()) {
                 status = "client_io_failed";
                 notifyPlayer(client, "§c[VoxySync] 有区域未收齐，请稍后重试");
                 syncing = false;
-                cleanupFailedSyncFiles();
+                if (cache != null) {
+                    cache.save();
+                }
                 return;
             }
             Path importRegionDir = regionDir;
@@ -372,14 +391,12 @@ public final class VoxySyncClient {
             IVoxyBridge bridge = VoxyBridgeLoader.getBridge();
             if (bridge == null) {
                 notifyPlayer(client, "§c[VoxySync] 未找到 Voxy 桥接，无法导入");
-                cleanupFailedSyncFiles();
             } else if (importRegionDir == null || !Files.isDirectory(importRegionDir)) {
                 notifyPlayer(client, "§a[VoxySync] 数据已下载");
                 status = "completed";
             } else if (!bridge.startImport(client, importRegionDir)) {
                 notifyPlayer(client, "§e[VoxySync] 数据已下载，但 Voxy 导入器忙碌中，稍后会自动使用");
                 status = "import_busy";
-                cleanupFailedSyncFiles();
             } else {
                 notifyPlayer(client, "§a[VoxySync] 世界数据同步完成，Voxy 开始导入超远渲染 LoD！");
                 status = "import_started";
@@ -388,7 +405,6 @@ public final class VoxySyncClient {
             LOGGER.error("启动 Voxy 导入失败", e);
             notifyPlayer(client, "§c[VoxySync] 启动 Voxy 导入失败：" + e.getClass().getSimpleName());
             status = "import_failed";
-            cleanupFailedSyncFiles();
         } finally {
             syncing = false;
         }
@@ -462,7 +478,7 @@ public final class VoxySyncClient {
         return status;
     }
 
-    /** 断线/退出时重置自动同步状态 */
+    /** 断线/退出时重置自动同步状态（保留 staging 与缓存，实现断点续传） */
     public static void onDisconnect() {
         requestedDimension = "";
         autoAttemptedDimension = "";
@@ -470,8 +486,10 @@ public final class VoxySyncClient {
         capabilityRequested = false;
         serverEnabled = false;
         syncing = false;
+        if (cache != null) {
+            cache.save();
+        }
         cleanupLocalState();
-        VOXY_IO_WORKER.execute(VoxySyncClient::cleanupFailedSyncFiles);
     }
 
     // ---------- 内部 ----------
@@ -503,7 +521,12 @@ public final class VoxySyncClient {
     private static void fail(String reason) {
         status = reason;
         syncing = false;
-        VOXY_IO_WORKER.execute(VoxySyncClient::cleanupFailedSyncFiles);
+        // 保留 staging（断点续传），只尽力持久化已完成的缓存
+        VOXY_IO_WORKER.execute(() -> {
+            if (cache != null) {
+                cache.save();
+            }
+        });
     }
 
     private static void cleanupLocalState() {
@@ -528,29 +551,31 @@ public final class VoxySyncClient {
         }
     }
 
-    private static void cleanupPartialFiles() {
-        assemblies.clear();
-        if (regionDir == null || !Files.isDirectory(regionDir)) {
-            return;
-        }
-        try (var stream = Files.newDirectoryStream(regionDir, "*.part")) {
-            for (Path path : stream) {
-                Files.deleteIfExists(path);
+    /**
+     * 迁移旧会话目录里已完成的区域文件到稳定目录（0.1.2 断点续传）。
+     * 旧目录：staging/&lt;维度&gt;/&lt;syncId&gt;/region/*.mca → staging/&lt;维度&gt;/region/
+     */
+    private static void migrateOldSessionFiles(Path dimRoot, Path stableRegionDir) throws IOException {
+        try (var stream = Files.newDirectoryStream(dimRoot)) {
+            for (Path entry : stream) {
+                if (!Files.isDirectory(entry) || entry.getFileName().toString().equals("region")) {
+                    continue;
+                }
+                Path oldRegion = entry.resolve("region");
+                if (!Files.isDirectory(oldRegion)) {
+                    continue;
+                }
+                try (var files = Files.newDirectoryStream(oldRegion, "*.mca")) {
+                    for (Path f : files) {
+                        Path target = stableRegionDir.resolve(f.getFileName().toString());
+                        if (!Files.exists(target)) {
+                            Files.move(f, target, StandardCopyOption.REPLACE_EXISTING);
+                        }
+                    }
+                }
+                // 旧目录里的残留（.part 等）不再需要，删除
+                deleteDirectory(entry);
             }
-        } catch (IOException e) {
-            LOGGER.warn("清理 Voxy 分片文件失败", e);
-        }
-    }
-
-    private static void cleanupFailedSyncFiles() {
-        cleanupPartialFiles();
-        if (stagingRoot == null) {
-            return;
-        }
-        try {
-            deleteDirectory(stagingRoot);
-        } catch (IOException e) {
-            LOGGER.warn("清理失败的 Voxy staging 目录失败", e);
         }
     }
 
