@@ -11,8 +11,9 @@ cd /opt/mc-control-panel/backend && /opt/mc-control-panel/.venv/bin/python3 -c "
 
 ## 1. 服务端 mod + 配置（需重启生效）
 ```bash
-sudo -n cp /home/ubuntu/workspace/voxysync/build/libs/voxysync.jar /home/ubuntu/minecraft-fabric-server/mods/voxysync-0.1.0.jar
+sudo -n cp /home/ubuntu/workspace/voxysync/dist/voxysync-0.1.0.jar /home/ubuntu/minecraft-fabric-server/mods/voxysync-0.1.0.jar
 sudo -n chown ubuntu:ubuntu /home/ubuntu/minecraft-fabric-server/mods/voxysync-0.1.0.jar
+# （可选）校验：sha256sum -c /home/ubuntu/workspace/voxysync/dist/SHA256SUMS.txt  # 应输出 OK
 # 配置文件（全图模式 = 用户已确认的主需求；启动会打印红色安全警告）
 sudo -n tee /home/ubuntu/minecraft-fabric-server/config/voxysync.json > /dev/null <<'JSON'
 {
@@ -37,7 +38,7 @@ grep -iE 'VoxySync' /home/ubuntu/minecraft-fabric-server/logs/latest.log | head 
 
 ## 2. 客户端包（免重启打包）
 ```bash
-sudo -n cp /home/ubuntu/workspace/voxysync/build/libs/voxysync.jar /home/ubuntu/minecraft-fabric-server/automodpack/host-modpack/main/mods/voxysync-0.1.0.jar
+sudo -n cp /home/ubuntu/workspace/voxysync/dist/voxysync-0.1.0.jar /home/ubuntu/minecraft-fabric-server/automodpack/host-modpack/main/mods/voxysync-0.1.0.jar
 sudo -n chown ubuntu:ubuntu /home/ubuntu/minecraft-fabric-server/automodpack/host-modpack/main/mods/voxysync-0.1.0.jar
 ```
 然后在面板「🔄 客户端同步」页点【重新打包】（= POST /api/syncmods/repack，RCON 触发 automodpack generate，无需重启 MC）。

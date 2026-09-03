@@ -65,6 +65,6 @@ capability_request → capability；sync_request（分块，见下）→ sync_st
 ```
 
 ## 测试
-- 服务端链路：/tmp 复刻实例（/tmp/mcopt-xx，端口 25566）→ 控制台 /voxysync devtest
-  验证区域收集/增量/编解码；全链路等真机玩家验证。
-- 客户端导入：需要真实客户端或 Xvfb 软渲染（本机无 GPU，不做）。
+- 客户端纯逻辑单测：`./gradlew test`（区域拼装乱序/重复/越界、缓存读写、元数据分块，11 项）
+- 服务端链路回归：`bash test/verify-server.sh`（构建 → /tmp 复刻实例 → RCON devtest 诊断，11 项断言；脚本只按 `-Xmx1536M` 精确匹配测试实例）
+- 客户端导入真机：需要真实客户端或 Xvfb 软渲染（本机无 GPU，不做），待玩家验证。

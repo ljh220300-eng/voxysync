@@ -1,0 +1,21 @@
+VoxySync for Minecraft 1.20.1 (Fabric)
+=======================================
+
+Copyright (C) 2026 Nexus server maintainers.
+
+This mod is a derivative work of:
+  MapSyncer-rebuild (https://github.com/Jiemoy/MapSyncer-rebuild)
+  Copyright (C) 2025-2026 Jiemoy and contributors. Licensed under GPL-3.0-only.
+
+Adapted components (protocol states, staging assembly, Voxy reflection bridge,
+region meta cache, network payload shapes) derive from the above repository.
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version, as included in the file LICENSE in this repository.
+
+Voxy itself is a separate project (c) MCRcortex (https://github.com/MCRcortex/voxy),
+MIT-licensed; this mod only invokes it via reflection at runtime (no code merging).
+
+Any distribution of this mod must ship the corresponding source code and this
+notice. See LICENSE for details.
