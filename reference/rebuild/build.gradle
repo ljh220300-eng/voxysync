@@ -1,0 +1,88 @@
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+	id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+	archivesName = project.mod_version
+}
+
+tasks.withType(org.gradle.api.tasks.bundling.AbstractArchiveTask).configureEach {
+	archiveVersion = ""
+}
+
+tasks.withType(Jar).configureEach {
+	from("LICENSE") {
+		rename { "${it}_${project.mod_id}" }
+	}
+	from("NOTICE") {
+		rename { "${it}_${project.mod_id}" }
+	}
+}
+
+repositories {
+	// Loom adds Minecraft and Fabric repositories automatically.
+}
+
+loom {
+	splitEnvironmentSourceSets()
+
+	mods {
+		"${project.mod_id}" {
+			sourceSet sourceSets.main
+			sourceSet sourceSets.client
+		}
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+}
+
+processResources {
+	def props = [
+			version: project.version,
+			mod_id: project.mod_id,
+			mod_name: project.mod_name,
+			mod_description: project.mod_description,
+			mod_authors: project.mod_authors,
+			loader_version: project.loader_version,
+			fabric_api_version: project.fabric_api_version,
+			minecraft_version: project.minecraft_version
+	]
+	inputs.properties props
+
+	filesMatching("fabric.mod.json") {
+		expand props
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.encoding = 'UTF-8'
+	it.options.release = 25
+}
+
+java {
+	withSourcesJar()
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}
+
+publishing {
+	publications {
+		create("mavenJava", MavenPublication) {
+			from components.java
+		}
+	}
+
+	repositories {
+		maven {
+			url "file://${project.projectDir}/repo"
+		}
+	}
+}

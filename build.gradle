@@ -1,0 +1,82 @@
+plugins {
+	id 'net.fabricmc.fabric-loom-remap' version "${loom_version}"
+	id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+	archivesName = project.mod_id
+}
+
+tasks.withType(org.gradle.api.tasks.bundling.AbstractArchiveTask).configureEach {
+	archiveVersion = ""
+}
+
+tasks.withType(Jar).configureEach {
+	from("LICENSE") {
+		rename { "${it}_${project.mod_id}" }
+	}
+	from("NOTICE") {
+		rename { "${it}_${project.mod_id}" }
+	}
+}
+
+repositories {
+	// 腾讯云镜像优先（本机在腾讯云，实测 maven-public ~20MB/s；失败自动回落官方源）
+	maven {
+		name = 'TencentMirror'
+		url = 'https://mirrors.cloud.tencent.com/nexus/repository/maven-public/'
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	// 官方 Mojang 映射（Loom 1.14 默认推荐；与 rebuild 上游一致）
+	mappings loom.officialMojangMappings()
+	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+}
+
+processResources {
+	def props = [
+			version: project.version,
+			mod_id: project.mod_id,
+			mod_name: project.mod_name,
+			mod_description: project.mod_description,
+			mod_authors: project.mod_authors,
+			loader_version: project.loader_version,
+			fabric_api_version: project.fabric_api_version,
+			minecraft_version: project.minecraft_version
+	]
+	inputs.properties props
+
+	filesMatching("fabric.mod.json") {
+		expand props
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.encoding = 'UTF-8'
+	it.options.release = 17
+}
+
+java {
+	withSourcesJar()
+	sourceCompatibility = JavaVersion.VERSION_17
+	targetCompatibility = JavaVersion.VERSION_17
+}
+
+publishing {
+	publications {
+		create("mavenJava", MavenPublication) {
+			from components.java
+		}
+	}
+	repositories {
+		maven {
+			url "file://${project.projectDir}/repo"
+		}
+	}
+}

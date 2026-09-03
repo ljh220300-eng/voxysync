@@ -1,0 +1,66 @@
+# Gradle
+.gradle/
+build/
+out/
+
+# Build outputs
+output/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+.vscode/
+
+# Eclipse
+bin/
+.run/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Minecraft
+run/
+logs/
+
+# Claude Code
+.claude/
+
+# 参考资料（反编译源码、工具 JAR、日志等，不参与构建）
+.reference/
+
+# Decompiler output
+.decompiled/
+
+# Eclipse metadata
+.eclipse/
+
+# Downloaded/pulled JAR files (not build outputs)
+xaeroworldmap-neoforge-*.jar
+
+# Extracted JAR contents
+xaeroworldmap-neoforge-*/
+
+# Downloaded Gradle (should not be committed)
+gradle-8.9/
+gradle-8.9-bin.zip
+.fake
+
+# Deployment scripts (local environment specific)
+deploy.bat
+
+# Utility scripts (local environment specific)
+crc32.bat
+CRC32Tool.java
+CRC32Tool.class
+
+# Build outputs
+outputs/
+
+# Temporary decompilation artifacts
+.tmpfml/

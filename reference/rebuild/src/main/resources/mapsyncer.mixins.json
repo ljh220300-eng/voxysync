@@ -1,0 +1,11 @@
+{
+  "required": true,
+  "package": "com.mapsyncer.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "mixins": [
+    "LevelChunkDirtyMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
