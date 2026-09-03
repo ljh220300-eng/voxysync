@@ -91,4 +91,32 @@ public class VoxyBridgeImpl implements IVoxyBridge {
         };
         return (Boolean) makeAndRunIfNoneMethod.invoke(importManager, engine, factory);
     }
+
+    @Override
+    public boolean isImportBusy(Minecraft client) throws Exception {
+        Object instance = getInstanceMethod.invoke(null);
+        if (instance == null || client == null || client.level == null) {
+            return false;
+        }
+        Object engine = ofEngineMethod.invoke(null, client.level);
+        if (engine == null) {
+            return false;
+        }
+        Object importManager = getImportManagerMethod.invoke(instance);
+        if (importManager == null) {
+            return false;
+        }
+        // ImportManager.activeImporters: Map<WorldEngine, ImportTask>
+        try {
+            java.lang.reflect.Field active = importManager.getClass().getDeclaredField("activeImporters");
+            active.setAccessible(true);
+            Object map = active.get(importManager);
+            if (map instanceof java.util.Map<?, ?> m) {
+                return m.containsKey(engine);
+            }
+        } catch (NoSuchFieldException ignored) {
+            // 字段名变化时保守返回 busy=false，不影响主流程
+        }
+        return false;
+    }
 }

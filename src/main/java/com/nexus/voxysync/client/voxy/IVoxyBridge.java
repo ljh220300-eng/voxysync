@@ -12,4 +12,7 @@ public interface IVoxyBridge {
     boolean isAvailable(Minecraft client);
 
     boolean startImport(Minecraft client, Path regionDirectory) throws Exception;
+
+    /** 导入是否仍在进行（诊断/完成提示用） */
+    boolean isImportBusy(Minecraft client) throws Exception;
 }

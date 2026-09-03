@@ -661,6 +661,7 @@ public final class VoxySyncHandler {
     // ---------- 生命周期 ----------
 
     public static void onPlayerDisconnect(UUID playerId) {
+        pendingMeta.remove(playerId);
         Thread thread = syncThreads.remove(playerId);
         if (thread != null && thread.isAlive()) {
             thread.interrupt();
@@ -691,7 +692,8 @@ public final class VoxySyncHandler {
         playerSyncDimensions.remove(playerId);
         speedLimitBytesSent.remove(playerId);
         speedLimitCycleStart.remove(playerId);
-        pendingMeta.remove(playerId);
+        // 注意：不要移除 pendingMeta！聚合器在分块到达期间需要跨块存活，
+        // 它只应在断开或服务器停止时清理（见 onPlayerDisconnect/cleanup）。
     }
 
     /** 供命令类调用：给某个玩家预设本次同步模式（request_sync 后由客户端发起请求时消费） */

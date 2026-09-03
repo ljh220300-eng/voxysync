@@ -68,6 +68,9 @@ public final class VoxySyncClient {
     private static int completedSinceSave;
     /** 本次同步开始时客户端已有的区域数（用于按总量显示进度，避免“看起来归零”） */
     private static volatile int alreadyDone;
+    /** 导入状态轮询计数（诊断：提示导入进行/完成） */
+    private static volatile int importWatchTicks;
+    private static volatile int importWatchNotified;
     private static final Map<String, RegionAssembly> assemblies = new ConcurrentHashMap<>();
     private static final ExecutorService VOXY_IO_WORKER = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "voxysync-client-io");
@@ -407,6 +410,9 @@ public final class VoxySyncClient {
             } else {
                 notifyPlayer(client, "§a[VoxySync] 世界数据同步完成，Voxy 开始导入超远渲染 LoD！");
                 status = "import_started";
+                importWatchTicks = 0;
+                importWatchNotified = 0;
+                reportVoxySettings(client);
             }
         } catch (Exception e) {
             LOGGER.error("启动 Voxy 导入失败", e);
@@ -414,6 +420,27 @@ public final class VoxySyncClient {
             status = "import_failed";
         } finally {
             syncing = false;
+        }
+    }
+
+    /** 打印 Voxy 在客户端实际生效的设置（诊断：渲染是否真的开启） */
+    private static void reportVoxySettings(Minecraft client) {
+        try {
+            Class<?> cfgClass = Class.forName("me.cortex.voxy.client.config.VoxyConfig");
+            Object cfg = cfgClass.getField("CONFIG").get(null);
+            boolean enabled = cfgClass.getField("enabled").getBoolean(cfg);
+            boolean render = cfgClass.getField("enableRendering").getBoolean(cfg);
+            boolean ingest = cfgClass.getField("ingestEnabled").getBoolean(cfg);
+            int distance = cfgClass.getField("sectionRenderDistance").getInt(cfg);
+            String ver = net.fabricmc.loader.api.FabricLoader.getInstance()
+                    .getModContainer("voxy").map(c -> c.getMetadata().getVersion().getFriendlyString())
+                    .orElse("unknown");
+            LOGGER.info("[VoxySync] Voxy {} 实际配置: enabled={} enableRendering={} ingestEnabled={} sectionRenderDistance={}",
+                    ver, enabled, render, ingest, distance);
+            notifyPlayer(client, "§7[VoxySync] Voxy 配置检查: 渲染=" + (render ? "§a开" : "§c关")
+                    + "§r 总开关=" + (enabled ? "§a开" : "§c关") + "§r LoD距离=" + distance + " 区块");
+        } catch (Throwable t) {
+            LOGGER.warn("[VoxySync] 读取 Voxy 配置失败", t);
         }
     }
 
@@ -445,6 +472,29 @@ public final class VoxySyncClient {
             retryTicks--;
             if (retryTicks == 0 && serverEnabled) {
                 startSync(client, currentDimensionId(client), false);
+            }
+        }
+        // 导入阶段状态轮询：每 10 秒查一次导入器是否仍在忙
+        if ("import_started".equals(status) && client.level != null && client.player != null) {
+            importWatchTicks++;
+            if (importWatchTicks % 200 == 0) {
+                try {
+                    IVoxyBridge bridge = VoxyBridgeLoader.getBridge();
+                    boolean busy = bridge != null && bridge.isImportBusy(client);
+                    int seconds = importWatchTicks / 20;
+                    if (busy && seconds - importWatchNotified >= 60) {
+                        importWatchNotified = seconds;
+                        client.player.displayClientMessage(
+                                Component.literal("§7[VoxySync] Voxy 导入中（已 " + seconds + " 秒），完成后远处地形即可看见"), false);
+                    } else if (!busy) {
+                        status = "import_done";
+                        client.player.displayClientMessage(
+                                Component.literal("§a[VoxySync] Voxy 导入完成！请飞到高处看向地平线验证远处地形（若仍无变化请把本消息截图给我）"), false);
+                    }
+                } catch (Throwable t) {
+                    LOGGER.warn("[VoxySync] 导入状态查询失败", t);
+                    importWatchTicks = 0;
+                }
             }
         }
         if (autoAttempts > 0 && !syncing && serverEnabled && client.level != null) {
