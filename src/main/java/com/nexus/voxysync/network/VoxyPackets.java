@@ -67,6 +67,17 @@ public final class VoxyPackets {
         }
     }
 
+    /** 能力探测请求（客户端 → 服务端）：携带客户端 mod 版本，便于服务端日志排查 */
+    public record CapabilityRequestPayload(String clientVersion) {
+        public void encode(FriendlyByteBuf buf) {
+            buf.writeUtf(this.clientVersion == null ? "" : this.clientVersion, 32);
+        }
+
+        public static CapabilityRequestPayload decode(FriendlyByteBuf buf) {
+            return new CapabilityRequestPayload(buf.readUtf(32));
+        }
+    }
+
     /**
      * 同步请求（客户端 → 服务端，按块发送：1.20.1 C2S 自定义载荷上限 32767 字节）。
      *

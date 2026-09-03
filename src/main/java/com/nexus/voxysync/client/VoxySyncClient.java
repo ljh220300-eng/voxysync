@@ -104,7 +104,12 @@ public final class VoxySyncClient {
             return;
         }
         capabilityRequested = true;
+        String version = net.fabricmc.loader.api.FabricLoader.getInstance()
+                .getModContainer("voxysync").map(c -> c.getMetadata().getVersion().getFriendlyString())
+                .orElse("unknown");
+        VoxyPackets.CapabilityRequestPayload payload = new VoxyPackets.CapabilityRequestPayload(version);
         FriendlyByteBuf buf = PacketByteBufs.create();
+        payload.encode(buf);
         ClientPlayNetworking.send(VoxyPackets.CAPABILITY_REQUEST, buf);
     }
 
@@ -538,7 +543,8 @@ public final class VoxySyncClient {
         syncing = false;
         retryTicks = 0;
         retryAttempt = 0;
-        alreadyDone = 0;
+        // 注意：不要在这里重置 alreadyDone —— handleStartOnWorker 也会调用本方法，
+        // 0.1.5 的显示 bug 就是它在 sync_start 时把“已就绪”抹成了 0
         syncId = "";
         dimensionId = "";
         processedRegions = 0;

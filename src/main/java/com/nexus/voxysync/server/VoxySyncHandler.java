@@ -84,7 +84,13 @@ public final class VoxySyncHandler {
 
     public static void register() {
         ServerPlayNetworking.registerGlobalReceiver(VoxyPackets.CAPABILITY_REQUEST,
-                (server, player, handler, buf, responseSender) -> sendCapability(player));
+                (server, player, handler, buf, responseSender) -> {
+                    VoxyPackets.CapabilityRequestPayload req =
+                            VoxyPackets.CapabilityRequestPayload.decode(buf);
+                    LOGGER.info("[VoxySync] 能力探测来自 {}（客户端 v{}）",
+                            player.getGameProfile().getName(), req.clientVersion());
+                    sendCapability(player);
+                });
         ServerPlayNetworking.registerGlobalReceiver(VoxyPackets.SYNC_REQUEST,
                 (server, player, handler, buf, responseSender) ->
                         handleSyncRequest(VoxyPackets.SyncRequestPayload.decode(buf), player));
