@@ -69,8 +69,13 @@ public final class VoxySyncClient {
         return thread;
     });
 
-    /** 用于自动同步的一次性标记 */
-    private static volatile String lastAutoDimension = "";
+    /** 已发出能力探测的维度（防止进服每 tick 重复发请求） */
+    private static volatile String requestedDimension = "";
+    /** 已尝试过自动同步的维度（防止能力回复/切维度反复触发） */
+    private static volatile String autoAttemptedDimension = "";
+    /** 本维度自动同步剩余重试次数（Voxy 引擎未就绪时每 10 秒重试） */
+    private static volatile int autoAttempts;
+    private static volatile int autoAttemptTimer;
     /** server_busy 自动重试倒计时（tick；1200 = 60 秒），仅重试一次 */
     private static volatile int retryTicks;
     private static volatile int retryAttempt;
@@ -105,22 +110,50 @@ public final class VoxySyncClient {
             } else {
                 LOGGER.info("服务器未启用 Voxy 同步（{}）", payload.reason());
             }
-            // 收到能力后，若启用且当前维度还没同步过 → 自动发起
-            maybeAutoStart(client);
+            // 收到能力后，若启用且当前维度还没尝试过 → 自动发起（含重试）
+            scheduleAutoStart(client);
         });
     }
 
-    private static void maybeAutoStart(Minecraft client) {
-        if (!serverEnabled || client.level == null || client.player == null) {
-            return;
-        }
-        if (!VoxySyncConfig.INSTANCE.autoStartOnJoin) {
+    private static void scheduleAutoStart(Minecraft client) {
+        if (!serverEnabled || !VoxySyncConfig.INSTANCE.autoStartOnJoin) {
             return;
         }
         String dim = currentDimensionId(client);
-        if (dim == null || dim.equals(lastAutoDimension)) {
+        if (dim == null || dim.equals(autoAttemptedDimension)) {
             return;
         }
+        autoAttemptedDimension = dim;
+        autoAttempts = 5;
+        autoAttemptTimer = 0;
+        tryAutoStart(client);
+    }
+
+    /** 尝试自动同步；Voxy 引擎未就绪时由 {@link #onClientTick} 定时重试 */
+    private static void tryAutoStart(Minecraft client) {
+        if (!serverEnabled || autoAttempts <= 0 || syncing) {
+            return;
+        }
+        String dim = currentDimensionId(client);
+        if (dim == null || !dim.equals(autoAttemptedDimension)) {
+            return;
+        }
+        if (client.player == null) {
+            return;
+        }
+        if (!VoxyBridgeLoader.isVoxyInstalled()) {
+            client.player.displayClientMessage(Component.literal("§7[VoxySync] 未检测到 Voxy 模组，无法同步世界数据（不影响游戏；安装 Voxy 后自动生效）"), false);
+            autoAttempts = 0;
+            return;
+        }
+        if (!VoxyBridgeLoader.isVoxyReady(client)) {
+            autoAttempts--;
+            if (autoAttempts == 0) {
+                client.player.displayClientMessage(Component.literal("§c[VoxySync] Voxy 尚未就绪，可稍后重进或让管理员执行 /voxysync sync"), false);
+            }
+            return;
+        }
+        autoAttempts = 0;
         startSync(client, dim, false);
     }
 
@@ -372,20 +405,29 @@ public final class VoxySyncClient {
         if (dim == null) {
             return;
         }
-        if (!dim.equals(lastAutoDimension)) {
-            lastAutoDimension = dim;
+        if (!dim.equals(requestedDimension)) {
+            // 新维度：重新探测服务器能力；重置自动同步尝试状态（能力回复后再触发）
+            requestedDimension = dim;
+            autoAttemptedDimension = "";
+            autoAttempts = 0;
             capabilityRequested = false;
             serverEnabled = false;
             requestCapability(client);
         }
     }
 
-    /** 每 tick 调用：显示 actionbar 进度 + server_busy 自动重试 */
+    /** 每 tick 调用：actionbar 进度 + server_busy 重试 + Voxy 未就绪自动重试 */
     public static void onClientTick(Minecraft client) {
         if (retryTicks > 0 && !syncing && client.level != null && client.player != null) {
             retryTicks--;
             if (retryTicks == 0 && serverEnabled) {
                 startSync(client, currentDimensionId(client), false);
+            }
+        }
+        if (autoAttempts > 0 && !syncing && serverEnabled && client.level != null) {
+            if (++autoAttemptTimer >= 200) { // 每 10 秒重试一次
+                autoAttemptTimer = 0;
+                tryAutoStart(client);
             }
         }
         if (!syncing || client.player == null) {
@@ -422,7 +464,9 @@ public final class VoxySyncClient {
 
     /** 断线/退出时重置自动同步状态 */
     public static void onDisconnect() {
-        lastAutoDimension = "";
+        requestedDimension = "";
+        autoAttemptedDimension = "";
+        autoAttempts = 0;
         capabilityRequested = false;
         serverEnabled = false;
         syncing = false;

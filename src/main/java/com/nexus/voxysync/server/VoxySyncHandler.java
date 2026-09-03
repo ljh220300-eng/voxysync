@@ -113,6 +113,8 @@ public final class VoxySyncHandler {
             }
             boolean enabled = VoxySyncConfig.INSTANCE.enableVoxySync;
             String reason = enabled ? "enabled:" + VoxySyncConfig.INSTANCE.syncMode : "server_disabled";
+            LOGGER.info("[VoxySync] 能力探测回复 {} → enabled={} reason={}",
+                    player.getGameProfile().getName(), enabled, reason);
             CapabilityPayload payload = new CapabilityPayload(enabled, reason);
             FriendlyByteBuf buf = PacketByteBufs.create();
             payload.encode(buf);
@@ -127,9 +129,12 @@ public final class VoxySyncHandler {
         }
         server.execute(() -> {
             if (!VoxySyncConfig.INSTANCE.enableVoxySync) {
+                LOGGER.info("[VoxySync] {} 请求同步但服务端已禁用", player.getGameProfile().getName());
                 sendComplete(player, "", false, "server_disabled", 0, 0);
                 return;
             }
+            LOGGER.info("[VoxySync] {} 请求同步，维度={}，元数据分块={}/{}", player.getGameProfile().getName(),
+                    payload.dimensionId(), payload.chunkIndex(), payload.totalChunks());
             // 聚合分块元数据（1.20.1 C2S 自定义载荷上限 32767 字节，故客户端分块发送）
             UUID playerId = player.getUUID();
             int totalChunks = Math.min(Math.max(payload.totalChunks(), 1), VoxyPackets.MAX_CHUNKS);
@@ -245,6 +250,8 @@ public final class VoxySyncHandler {
             List<RegionFileInfo> regions = collectRegions(dimensionId, regionDir, clientMeta, mode,
                     centerRegionX, centerRegionZ, VoxySyncConfig.INSTANCE.radiusBlocks);
             long totalBytes = regions.stream().mapToLong(RegionFileInfo::sizeBytes).sum();
+            LOGGER.info("[VoxySync] 开始同步 {}：模式={} 维度={} 区域={} 总大小={} MB",
+                    player.getGameProfile().getName(), mode, dimensionId, regions.size(), totalBytes / 1024 / 1024);
             sendStart(player, new SyncStartPayload(syncId, dimensionId, regions.size(), totalBytes));
 
             if (regions.isEmpty()) {
