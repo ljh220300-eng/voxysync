@@ -136,8 +136,9 @@ public final class VoxySyncHandler {
                 sendComplete(player, "", false, "server_disabled", 0, 0);
                 return;
             }
-            LOGGER.info("[VoxySync] {} 请求同步，维度={}，元数据分块={}/{}", player.getGameProfile().getName(),
-                    payload.dimensionId(), payload.chunkIndex(), payload.totalChunks());
+            LOGGER.info("[VoxySync] {} 请求同步，维度={}，元数据块 {}/{}，本块条目 {}",
+                    player.getGameProfile().getName(), payload.dimensionId(),
+                    payload.chunkIndex(), payload.totalChunks(), payload.entries().size());
             // 聚合分块元数据（1.20.1 C2S 自定义载荷上限 32767 字节，故客户端分块发送）
             UUID playerId = player.getUUID();
             int totalChunks = Math.min(Math.max(payload.totalChunks(), 1), VoxyPackets.MAX_CHUNKS);
@@ -253,8 +254,10 @@ public final class VoxySyncHandler {
             List<RegionFileInfo> regions = collectRegions(dimensionId, regionDir, clientMeta, mode,
                     centerRegionX, centerRegionZ, VoxySyncConfig.INSTANCE.radiusBlocks);
             long totalBytes = regions.stream().mapToLong(RegionFileInfo::sizeBytes).sum();
-            LOGGER.info("[VoxySync] 开始同步 {}：模式={} 维度={} 区域={} 总大小={} MB",
-                    player.getGameProfile().getName(), mode, dimensionId, regions.size(), totalBytes / 1024 / 1024);
+            int skipped = Math.max(0, countAllFiles(regionDir) - regions.size());
+            LOGGER.info("[VoxySync] 开始同步 {}：模式={} 维度={} 剩余区域={} 总大小={} MB（跳过已有 {}）",
+                    player.getGameProfile().getName(), mode, dimensionId, regions.size(),
+                    totalBytes / 1024 / 1024, skipped);
             sendStart(player, new SyncStartPayload(syncId, dimensionId, regions.size(), totalBytes));
 
             if (regions.isEmpty()) {

@@ -199,8 +199,9 @@ public final class VoxySyncClient {
         }
         cache = VoxySyncCache.create(client);
         Map<String, VoxyPackets.RegionMeta> clientMeta = cache.snapshotForDimension(dim);
-        alreadyDone = clientMeta.size();
         cleanupLocalState();
+        // 必须在 cleanupLocalState 之后设置（它会把 alreadyDone 清零，0.1.4 的显示 bug 就在这）
+        alreadyDone = clientMeta.size();
         syncing = true;
         syncId = "";
         dimensionId = dim;
