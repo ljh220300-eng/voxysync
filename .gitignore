@@ -6,3 +6,7 @@ out/
 .idea/
 .vscode/
 repo/
+# 第三方源码副本（rebuild/RuoChennn 参考用，不入库）
+reference/
+# 本地发布产物（由源码构建）
+dist/
