@@ -66,6 +66,8 @@ public final class VoxySyncClient {
     private static VoxySyncCache cache;
     /** 距上次持久化缓存已完成的区域数 */
     private static int completedSinceSave;
+    /** 本次同步开始时客户端已有的区域数（用于按总量显示进度，避免“看起来归零”） */
+    private static volatile int alreadyDone;
     private static final Map<String, RegionAssembly> assemblies = new ConcurrentHashMap<>();
     private static final ExecutorService VOXY_IO_WORKER = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "voxysync-client-io");
@@ -197,6 +199,7 @@ public final class VoxySyncClient {
         }
         cache = VoxySyncCache.create(client);
         Map<String, VoxyPackets.RegionMeta> clientMeta = cache.snapshotForDimension(dim);
+        alreadyDone = clientMeta.size();
         cleanupLocalState();
         syncing = true;
         syncId = "";
@@ -312,12 +315,10 @@ public final class VoxySyncClient {
                 moveCompletedRegion(partPath, finalPath);
                 if (cache != null) {
                     cache.update(payload.dimensionId(), fileName, payload.timestampSeconds(), payload.totalBytes());
-                    // 周期性持久化：即便中途退出/断线，已完成区域下次可跳过
+                    // 每个区域立即持久化：即使硬关游戏/断电也不丢已完成的区域
                     completedSinceSave++;
-                    if (completedSinceSave >= 25) {
-                        cache.save();
-                        completedSinceSave = 0;
-                    }
+                    cache.save();
+                    completedSinceSave = 0;
                 }
                 assemblies.remove(fileName);
             }
@@ -452,8 +453,11 @@ public final class VoxySyncClient {
         if (client.level == null || client.level.getGameTime() % PROGRESS_ACTIONBAR_INTERVAL_TICKS != 0) {
             return;
         }
-        int percent = getPercent();
-        String text = "§6Voxy 同步: §e" + percent + "%§r (" + processedRegions + "/" + totalRegions + " 区域)";
+        int done = alreadyDone + processedRegions;
+        int total = alreadyDone + totalRegions;
+        int percent = total > 0 ? done * 100 / total : 0;
+        String text = "§6Voxy 同步: §e" + percent + "%§r (" + done + "/" + total
+                + " 区域，其中已就绪 " + alreadyDone + ")";
         client.player.displayClientMessage(Component.literal(text), true);
     }
 
@@ -533,6 +537,7 @@ public final class VoxySyncClient {
         syncing = false;
         retryTicks = 0;
         retryAttempt = 0;
+        alreadyDone = 0;
         syncId = "";
         dimensionId = "";
         processedRegions = 0;
