@@ -169,24 +169,35 @@ public final class VoxySyncClient {
         try {
             // C2S 自定义载荷上限 32767 字节 → 分块发送元数据
             String requestId = UUID.randomUUID().toString();
-            int totalChunks = Math.max(1,
-                    (clientMeta.size() + VoxyPackets.MAX_ENTRIES_PER_CHUNK - 1) / VoxyPackets.MAX_ENTRIES_PER_CHUNK);
-            int chunkIndex = 0;
-            Map<String, VoxyPackets.RegionMeta> chunk = new HashMap<>();
-            for (Map.Entry<String, VoxyPackets.RegionMeta> entry : clientMeta.entrySet()) {
-                chunk.put(entry.getKey(), entry.getValue());
-                if (chunk.size() >= VoxyPackets.MAX_ENTRIES_PER_CHUNK) {
-                    sendSyncRequestChunk(dim, requestId, chunkIndex++, totalChunks, chunk);
-                    chunk = new HashMap<>();
-                }
-            }
-            if (!chunk.isEmpty() || chunkIndex == 0) {
-                sendSyncRequestChunk(dim, requestId, chunkIndex, totalChunks, chunk);
+            java.util.List<Map<String, VoxyPackets.RegionMeta>> chunks = chunkMetaForRequest(clientMeta);
+            int totalChunks = chunks.size();
+            for (int i = 0; i < totalChunks; i++) {
+                sendSyncRequestChunk(dim, requestId, i, totalChunks, chunks.get(i));
             }
         } catch (IllegalArgumentException | IllegalStateException e) {
             LOGGER.warn("发送同步请求失败", e);
             fail("no_connection");
         }
+    }
+
+    /** 将客户端元数据按 {@link VoxyPackets#MAX_ENTRIES_PER_CHUNK} 条/块切分（可单测） */
+    static java.util.List<Map<String, VoxyPackets.RegionMeta>> chunkMetaForRequest(
+            Map<String, VoxyPackets.RegionMeta> clientMeta) {
+        int total = Math.max(1, (clientMeta.size() + VoxyPackets.MAX_ENTRIES_PER_CHUNK - 1)
+                / VoxyPackets.MAX_ENTRIES_PER_CHUNK);
+        java.util.List<Map<String, VoxyPackets.RegionMeta>> result = new java.util.ArrayList<>(total);
+        Map<String, VoxyPackets.RegionMeta> chunk = new HashMap<>();
+        for (Map.Entry<String, VoxyPackets.RegionMeta> entry : clientMeta.entrySet()) {
+            chunk.put(entry.getKey(), entry.getValue());
+            if (chunk.size() >= VoxyPackets.MAX_ENTRIES_PER_CHUNK) {
+                result.add(chunk);
+                chunk = new HashMap<>();
+            }
+        }
+        if (!chunk.isEmpty() || result.isEmpty()) {
+            result.add(chunk);
+        }
+        return result;
     }
 
     private static void sendSyncRequestChunk(String dim, String requestId, int chunkIndex,
@@ -518,7 +529,8 @@ public final class VoxySyncClient {
         }
     }
 
-    private static class RegionAssembly {
+    /** 区域分片拼装（纯 java.nio，可单测） */
+    static class RegionAssembly {
         private final int totalParts;
         private final long totalBytes;
         private final Set<Integer> received = ConcurrentHashMap.newKeySet();

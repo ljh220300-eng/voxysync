@@ -133,21 +133,27 @@ public final class VoxySyncHandler {
             // 聚合分块元数据（1.20.1 C2S 自定义载荷上限 32767 字节，故客户端分块发送）
             UUID playerId = player.getUUID();
             int totalChunks = Math.min(Math.max(payload.totalChunks(), 1), VoxyPackets.MAX_CHUNKS);
-            MetaAggregator aggregator = pendingMeta.compute(playerId, (id, prev) -> {
+            MetaAggregator[] holder = new MetaAggregator[1];
+            pendingMeta.compute(playerId, (id, prev) -> {
                 if (prev == null || !prev.requestId().equals(payload.requestId())
                         || !prev.dimensionId().equals(payload.dimensionId())) {
-                    // 新请求：停掉旧同步线程，重置聚合器
-                    Thread old = syncThreads.remove(id);
-                    if (old != null && old.isAlive()) {
-                        old.interrupt();
-                    }
-                    cleanupSyncStateNoCount(id);
-                    return new MetaAggregator(payload.dimensionId(), payload.requestId(),
-                            totalChunks, new ConcurrentHashMap<>());
+                    holder[0] = new MetaAggregator(payload.dimensionId(), payload.requestId(),
+                            totalChunks, new ConcurrentHashMap<>(), true);
+                } else {
+                    holder[0] = prev;
                 }
-                return prev;
+                holder[0].chunks().put(payload.chunkIndex(), payload.entries());
+                return holder[0];
             });
-            aggregator.chunks().put(payload.chunkIndex(), payload.entries());
+            MetaAggregator aggregator = holder[0];
+            if (aggregator.freshRequest()) {
+                // 新请求：停掉旧同步线程，清理旧状态（compute 已结束，可安全移除本键）
+                Thread old = syncThreads.remove(playerId);
+                if (old != null && old.isAlive()) {
+                    old.interrupt();
+                }
+                cleanupSyncStateNoCount(playerId);
+            }
             if (aggregator.chunks().size() < aggregator.totalChunks()) {
                 return; // 等待其余分块
             }
@@ -672,6 +678,6 @@ public final class VoxySyncHandler {
     }
 
     private record MetaAggregator(String dimensionId, String requestId, int totalChunks,
-                                  Map<Integer, Map<String, VoxyPackets.RegionMeta>> chunks) {
+                                  Map<Integer, Map<String, VoxyPackets.RegionMeta>> chunks, boolean freshRequest) {
     }
 }
