@@ -75,6 +75,9 @@ public final class VoxySyncHandler {
     /** 客户端分块上报的元数据聚合器（请求 id 不同则重置） */
     private static final Map<UUID, MetaAggregator> pendingMeta = new ConcurrentHashMap<>();
     private static final AtomicInteger activeSyncCount = new AtomicInteger();
+    /** 在途区域分片任务数上限（配合 server.execute 有界排队，防 OOM） */
+    private static final int MAX_PENDING_PARTS = 4;
+    private static final AtomicInteger pendingPartDispatches = new AtomicInteger();
 
     private VoxySyncHandler() {
     }
@@ -371,7 +374,9 @@ public final class VoxySyncHandler {
                 RegionPartPayload payload = new RegionPartPayload(syncId, dimensionId,
                         region.regionX(), region.regionZ(), partIndex, totalParts,
                         offset, region.sizeBytes(), region.timestampSeconds(), data);
-                sendPart(player, payload);
+                if (!sendPart(player, payload)) {
+                    throw new InterruptedException("连接拥塞/断开");
+                }
             }
         }
     }
@@ -431,8 +436,38 @@ public final class VoxySyncHandler {
         dispatchSend(player, VoxyPackets.SYNC_PROGRESS, buf -> payload.encode(buf));
     }
 
-    private static void sendPart(ServerPlayer player, RegionPartPayload payload) {
-        dispatchSend(player, VoxyPackets.REGION_PART, buf -> payload.encode(buf));
+    /**
+     * 发送区域分片（切回服务器线程），带<b>有界在途队列</b>（最多 {@link #MAX_PENDING_PARTS}）：
+     * 0.1.2 曾用 server.execute 无界排队 → 每项钉住 256KB 缓冲 → 不限速时 26 秒 OOM（2026-09-03 事故）。
+     * 现在：在途分片达到上限时同步线程等待主线程消化，队列内存恒定 ≤ MAX×256KB。
+     * 说明：1.20.1 的 Connection/Channel 均无公开可写性检查 API，因此限速(speedLimitKBps)
+     * 是防止 Netty 发送缓冲无限堆积的主防线，本有界队列是第二道防线。
+     */
+    private static boolean sendPart(ServerPlayer player, RegionPartPayload payload) throws InterruptedException {
+        MinecraftServer server = player.server;
+        if (server == null || player.connection == null
+                || !ServerPlayNetworking.canSend(player, VoxyPackets.REGION_PART)) {
+            return false;
+        }
+        while (pendingPartDispatches.get() >= MAX_PENDING_PARTS) {
+            if (!isPlayerStillValid(player)) {
+                return false;
+            }
+            Thread.sleep(5);
+        }
+        pendingPartDispatches.incrementAndGet();
+        server.execute(() -> {
+            try {
+                if (player.connection != null && ServerPlayNetworking.canSend(player, VoxyPackets.REGION_PART)) {
+                    FriendlyByteBuf buf = PacketByteBufs.create();
+                    payload.encode(buf);
+                    ServerPlayNetworking.send(player, VoxyPackets.REGION_PART, buf);
+                }
+            } finally {
+                pendingPartDispatches.decrementAndGet();
+            }
+        });
+        return true;
     }
 
     private static void sendComplete(ServerPlayer player, String syncId, boolean success,
@@ -639,6 +674,7 @@ public final class VoxySyncHandler {
         pendingMode.clear();
         pendingMeta.clear();
         activeSyncCount.set(0);
+        pendingPartDispatches.set(0);
     }
 
     private static void cleanupSyncStateNoCount(UUID playerId) {

@@ -1,4 +1,4 @@
-[13:11:58] [Test worker/WARN]: 加载 voxy-sync-cache.json 失败，忽略该缓存
+[13:54:49] [Test worker/WARN]: 加载 voxy-sync-cache.json 失败，忽略该缓存
 com.google.gson.JsonSyntaxException: com.google.gson.stream.MalformedJsonException: Expected ':' at line 1 column 8 path $.
 	at com.google.gson.Gson.fromJson(Gson.java:1229) ~[gson-2.10.jar:?]
 	at com.google.gson.Gson.fromJson(Gson.java:1124) ~[gson-2.10.jar:?]
