@@ -71,6 +71,9 @@ public final class VoxySyncClient {
 
     /** 用于自动同步的一次性标记 */
     private static volatile String lastAutoDimension = "";
+    /** server_busy 自动重试倒计时（tick；1200 = 60 秒），仅重试一次 */
+    private static volatile int retryTicks;
+    private static volatile int retryAttempt;
 
     private VoxySyncClient() {
     }
@@ -287,6 +290,11 @@ public final class VoxySyncClient {
                 status = payload.message();
                 String reason = reasonText(payload.message());
                 notifyPlayer(client, "§c[VoxySync] 同步失败：" + reason);
+                if ("server_busy".equals(payload.message()) && retryAttempt == 0) {
+                    retryAttempt = 1;
+                    retryTicks = 20 * 60;
+                    notifyPlayer(client, "§e[VoxySync] 60 秒后自动重试…");
+                }
                 syncing = false;
                 cleanupFailedSyncFiles();
                 return;
@@ -361,8 +369,14 @@ public final class VoxySyncClient {
         }
     }
 
-    /** 每 tick 调用：显示 actionbar 进度 */
+    /** 每 tick 调用：显示 actionbar 进度 + server_busy 自动重试 */
     public static void onClientTick(Minecraft client) {
+        if (retryTicks > 0 && !syncing && client.level != null && client.player != null) {
+            retryTicks--;
+            if (retryTicks == 0 && serverEnabled) {
+                startSync(client, currentDimensionId(client), false);
+            }
+        }
         if (!syncing || client.player == null) {
             return;
         }
@@ -439,6 +453,8 @@ public final class VoxySyncClient {
 
     private static void cleanupLocalState() {
         syncing = false;
+        retryTicks = 0;
+        retryAttempt = 0;
         syncId = "";
         dimensionId = "";
         processedRegions = 0;
