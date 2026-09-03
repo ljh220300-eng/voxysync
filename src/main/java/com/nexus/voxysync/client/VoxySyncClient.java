@@ -459,6 +459,12 @@ public final class VoxySyncClient {
         if (client.level == null || client.level.getGameTime() % PROGRESS_ACTIONBAR_INTERVAL_TICKS != 0) {
             return;
         }
+        // 未收到 sync_start（totalRegions==0）时不要显示百分比，否则 已就绪/(已就绪+0) = 100% 闪烁
+        if (totalRegions <= 0) {
+            client.player.displayClientMessage(
+                    Component.literal("§6Voxy 同步: §e正在请求…§r（已就绪 " + alreadyDone + "）"), true);
+            return;
+        }
         int done = alreadyDone + processedRegions;
         int total = alreadyDone + totalRegions;
         int percent = total > 0 ? done * 100 / total : 0;
