@@ -345,10 +345,12 @@ public final class VoxySyncHandler {
                 long timestampSeconds = Files.getLastModifiedTime(path).toMillis() / 1000;
                 String key = dimensionId + "/" + fileName;
                 VoxyPackets.RegionMeta clientEntry = clientMeta.get(key);
-                if (clientEntry != null
-                        && clientEntry.timestampSeconds() == timestampSeconds
-                        && clientEntry.sizeBytes() == sizeBytes) {
-                    continue;
+                if (clientEntry != null) {
+                    if (!VoxySyncConfig.INSTANCE.recheckChangedRegions
+                            || (clientEntry.timestampSeconds() == timestampSeconds
+                            && clientEntry.sizeBytes() == sizeBytes)) {
+                        continue;
+                    }
                 }
                 regions.add(new RegionFileInfo(path, regionX, regionZ, timestampSeconds, sizeBytes, dist));
             }

@@ -41,6 +41,12 @@ public final class VoxySyncConfig {
         public int globalSpeedLimitKBps = 0;
         public int maxPacketSize = 262144;
         public boolean autoStartOnJoin = true;
+        /**
+         * 变更复核：true（默认）= 每次同步复查已下载区域的 mtime/大小，变化即重发（远处与真实世界一致，
+         * 代价是活跃区每次登录会有少量区域重传）；false = 只在客户端没有该区域时才发（登录零重下，
+         * 但已下载区域的变更不再自动同步，需手动 /voxysync sync 或等新区块）。
+         */
+        public boolean recheckChangedRegions = true;
     }
 
     private VoxySyncConfig() {
@@ -86,5 +92,6 @@ public final class VoxySyncConfig {
         INSTANCE.globalSpeedLimitKBps = other.globalSpeedLimitKBps;
         INSTANCE.maxPacketSize = other.maxPacketSize;
         INSTANCE.autoStartOnJoin = other.autoStartOnJoin;
+        INSTANCE.recheckChangedRegions = other.recheckChangedRegions;
     }
 }
