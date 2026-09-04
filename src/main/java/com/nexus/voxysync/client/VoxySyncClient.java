@@ -27,6 +27,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -68,11 +69,16 @@ public final class VoxySyncClient {
     private static int completedSinceSave;
     /** 本次同步开始时客户端已有的区域数（用于按总量显示进度，避免“看起来归零”） */
     private static volatile int alreadyDone;
-    /** 导入状态轮询计数（诊断：提示导入进行/完成） */
+    /** 导入状态机（0=未导入 1=转换中 2=写入中 3=完成提示已发） */
+    private static volatile int importStage;
     private static volatile int importWatchTicks;
     private static volatile int importWatchNotified;
-    /** 历史存量补齐导入是否已触发（避免每次进服重复触发） */
-    private static volatile boolean catchUpImportAttempted;
+    /** 手动中止标记（区分中断原因，避免误报失败） */
+    private static volatile boolean manualStop;
+    /** 当次导入的待导入文件清单与是否首次全量 */
+    private static volatile java.util.List<String> pendingImportNames = java.util.List.of();
+    private static volatile boolean pendingImportFirst;
+    private static volatile boolean importBroken;
     private static final Map<String, RegionAssembly> assemblies = new ConcurrentHashMap<>();
     private static final ExecutorService VOXY_IO_WORKER = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "voxysync-client-io");
@@ -128,9 +134,9 @@ public final class VoxySyncClient {
             }
             // 收到能力后，若启用且当前维度还没尝试过 → 自动发起（含重试）
             scheduleAutoStart(client);
-            // 0.0.9: 历史存量补齐导入（稳定目录有文件且从未全量导入过）
-            if (serverEnabled) {
-                tryCatchUpImport(client);
+            // 登录导入：已下载未渲染的立即渲染；已渲染自动跳过
+            if (serverEnabled && !syncing) {
+                maybeLoginImport(client);
             }
         });
     }
@@ -363,6 +369,27 @@ public final class VoxySyncClient {
             }
             if (!payload.success()) {
                 status = payload.message();
+                boolean wasManualStop = manualStop;
+                manualStop = false;
+                if ("interrupted".equals(payload.message()) && wasManualStop) {
+                    // 手动中止：不报“失败”，改报已停止并触发渲染
+                    syncing = false;
+                    if (cache != null) {
+                        cache.save();
+                    }
+                    notifyPlayer(client, "§7[VoxySync] 已手动停止下载");
+                    try {
+                        mergeSessionToStable();
+                    } catch (IOException ignored) {
+                    }
+                    final Path stableCopy = stableRegionDir;
+                    client.execute(() -> {
+                        if (stableCopy != null) {
+                            finishImportOnClient(client, stableCopy);
+                        }
+                    });
+                    return;
+                }
                 String reason = reasonText(payload.message());
                 notifyPlayer(client, "§c[VoxySync] 同步失败：" + reason);
                 if ("server_busy".equals(payload.message()) && retryAttempt == 0) {
@@ -396,59 +423,118 @@ public final class VoxySyncClient {
                 }
                 return;
             }
-            // 0.0.9 修复：先合并本次会话文件到稳定目录；
-            // 首次全量导入稳定目录（含历史所有会话下载的文件），之后只导增量。
-            Path importRegionDir = regionDir;
+            // 合并本次会话文件到稳定目录（0.0.9+）；随后按“待导入清单”触发导入
             try {
-                if (stableRegionDir != null && Files.isDirectory(stableRegionDir)
-                        && regionDir != null && Files.isDirectory(regionDir)) {
-                    try (var stream = Files.newDirectoryStream(regionDir, "*.mca")) {
-                        for (Path f : stream) {
-                            Path target = stableRegionDir.resolve(f.getFileName().toString());
-                            if (!Files.exists(target)) {
-                                Files.move(f, target, StandardCopyOption.REPLACE_EXISTING);
-                            }
-                        }
-                    }
-                    Path marker = stableRegionDir.resolve(".full-import-done");
-                    if (!Files.exists(marker)) {
-                        importRegionDir = stableRegionDir; // 首次：把全部历史文件交给 Voxy
-                    }
-                    // 若 marker 已存在：importRegionDir 仍为本次新文件（增量导入）
-                }
+                mergeSessionToStable();
             } catch (IOException mergeEx) {
-                LOGGER.warn("合并暂存目录失败，直接导入本会话文件", mergeEx);
+                LOGGER.warn("合并暂存目录失败", mergeEx);
             }
-            final Path finalImportDir = importRegionDir;
-            client.execute(() -> finishImportOnClient(client, finalImportDir));
+            final Path stableCopy = stableRegionDir;
+            client.execute(() -> {
+                syncing = false;
+                if (stableCopy == null) {
+                    return;
+                }
+                finishImportOnClient(client, stableCopy);
+            });
         });
     }
 
-    private static void finishImportOnClient(Minecraft client, Path importRegionDir) {
-        status = "importing";
+    /** 把当前会话目录的 .mca 移入稳定目录（IO 线程调用） */
+    static void mergeSessionToStable() throws IOException {
+        if (stableRegionDir == null || regionDir == null) {
+            return;
+        }
+        if (!Files.isDirectory(stableRegionDir) || !Files.isDirectory(regionDir)) {
+            return;
+        }
+        try (var stream = Files.newDirectoryStream(regionDir, "*.mca")) {
+            for (Path f : stream) {
+                Path target = stableRegionDir.resolve(f.getFileName().toString());
+                if (!Files.exists(target)) {
+                    Files.move(f, target, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        }
+    }
+
+    /** 计算”待导入清单“：稳定目录中尚未渲染过的文件（首次全量 / 之后增量） */
+    static List<String> planPendingImportNames() throws IOException {
+        if (stableRegionDir == null || !Files.isDirectory(stableRegionDir)) {
+            return List.of();
+        }
+        VoxyImportTracker tracker = importTrackerFor(stableRegionDir);
+        Set<String> names = new java.util.LinkedHashSet<>();
+        try (var stream = Files.newDirectoryStream(stableRegionDir, "*.mca")) {
+            for (Path f : stream) {
+                names.add(f.getFileName().toString());
+            }
+        }
+        // 旧版 .full-import-done 迁移：标记存在而无 manifest → 视为已渲染
+        if (!tracker.hasManifest() && Files.exists(stableRegionDir.resolve(".full-import-done"))) {
+            tracker.bootstrapAll(names);
+            return List.of();
+        }
+        List<String> pending = tracker.pending(names);
+        LOGGER.info("[VoxySync] 待导入 {} 个（共 {} 个，已渲染 {}）",
+                pending.size(), names.size(), tracker.importedCount()
+                        + (tracker.hasManifest() ? 0 : names.size() - pending.size()));
+        return pending;
+    }
+
+    private static VoxyImportTracker importTrackerFor(Path stableDir) {
+        VoxyImportTracker tracker = new VoxyImportTracker(stableDir);
+        return tracker;
+    }
+
+    /** 触发导入入口（主线程）：按清单选择全量/增量目录，交给 Voxy */
+    private static void finishImportOnClient(Minecraft client, Path stableDir) {
         try {
+            java.util.List<String> pending = planPendingImportNames();
+            if (pending.isEmpty()) {
+                status = "import_done";
+                importStage = 3;
+                return;
+            }
             IVoxyBridge bridge = VoxyBridgeLoader.getBridge();
             if (bridge == null) {
                 notifyPlayer(client, "§c[VoxySync] 未找到 Voxy 桥接，无法导入");
-            } else if (importRegionDir == null || !Files.isDirectory(importRegionDir)) {
-                notifyPlayer(client, "§a[VoxySync] 数据已下载");
-                status = "completed";
-            } else if (!bridge.startImport(client, importRegionDir)) {
-                notifyPlayer(client, "§e[VoxySync] 数据已下载，但 Voxy 导入器忙碌中，稍后会自动使用");
-                status = "import_busy";
-            } else {
-                notifyPlayer(client, "§a[VoxySync] 世界数据同步完成，Voxy 开始导入超远渲染 LoD！");
-                status = "import_started";
-                importWatchTicks = 0;
-                importWatchNotified = 0;
-                reportVoxySettings(client);
+                status = "import_failed";
+                return;
             }
+            boolean first = !new VoxyImportTracker(stableDir).hasManifest();
+            pendingImportNames = pending;
+            pendingImportFirst = first;
+            Path target = stableDir;
+            if (!first) {
+                // 增量：把待导入文件复制到独立目录，只导这些（不重复渲染旧数据）
+                Path inc = stableDir.getParent().resolve("pending-import");
+                deleteDirectory(inc);
+                Files.createDirectories(inc);
+                for (String name : pending) {
+                    Path src = stableDir.resolve(name);
+                    if (Files.exists(src)) {
+                        Files.copy(src, inc.resolve(name), StandardCopyOption.REPLACE_EXISTING);
+                    }
+                }
+                target = inc;
+            }
+            if (!bridge.startImport(client, target)) {
+                notifyPlayer(client, "§e[VoxySync] Voxy 正在忙（已有导入进行中），稍后自动完成");
+                status = "import_busy";
+                return;
+            }
+            status = "import_started";
+            importStage = 1;
+            importWatchTicks = 0;
+            importWatchNotified = 0;
+            reportVoxySettings(client);
+            notifyPlayer(client, "§a[VoxySync] 开始渲染已下载的地图数据（" + pending.size()
+                    + " 个区域，约 " + Math.max(1, pending.size() / 300) + " 分钟）…");
         } catch (Exception e) {
             LOGGER.error("启动 Voxy 导入失败", e);
             notifyPlayer(client, "§c[VoxySync] 启动 Voxy 导入失败：" + e.getClass().getSimpleName());
             status = "import_failed";
-        } finally {
-            syncing = false;
         }
     }
 
@@ -476,49 +562,30 @@ public final class VoxySyncClient {
     // ---------- 自动同步 / 维度切换（由客户端 mod 每 tick / 进服事件驱动） ----------
 
     /**
-     * 0.0.9：历史存量补齐导入。
-     * 旧版本把已下载文件都放在稳定目录里但从未导入；此方法在进服时检查：
-     * 稳定目录有 *.mca 且没有全量导入标记 → 直接把整个稳定目录交给 Voxy 导入一次。
+     * 登录导入：每次进服/切维度后，把“已下载但未渲染过”的区域交给 Voxy（已渲染的自动跳过）。
+     * 全量标记（旧版 .full-import-done）兼容：存在即视为已渲染，不再重复全量。
      */
-    private static void tryCatchUpImport(Minecraft client) {
+    private static void maybeLoginImport(Minecraft client) {
         try {
-            if (catchUpImportAttempted || client.level == null || client.player == null) {
+            if (client.level == null || client.player == null) {
+                return;
+            }
+            if (syncing || importStage == 1 || importStage == 2) {
                 return;
             }
             Path dimRoot = client.gameDirectory.toPath().resolve("voxysync").resolve("staging")
                     .resolve(safeName(currentDimensionId(client) != null ? currentDimensionId(client) : "overworld"));
-            Path stable = dimRoot.resolve("region");
-            if (!Files.isDirectory(stable) || Files.exists(stable.resolve(".full-import-done"))) {
+            stableRegionDir = dimRoot.resolve("region");
+            if (!Files.isDirectory(stableRegionDir)) {
                 return;
             }
-            long count;
-            try (var stream = Files.newDirectoryStream(stable, "*.mca")) {
-                count = 0;
-                for (Path ignored : stream) {
-                    count++;
-                }
-            }
-            if (count == 0) {
+            java.util.List<String> pending = planPendingImportNames();
+            if (pending.isEmpty()) {
                 return;
             }
-            if (syncing || "importing".equals(status) || "import_started".equals(status)) {
-                return; // 等同步/导入结束后由下次触发
-            }
-            catchUpImportAttempted = true;
-            IVoxyBridge bridge = VoxyBridgeLoader.getBridge();
-            if (bridge == null) {
-                return;
-            }
-            if (!bridge.startImport(client, stable)) {
-                return; // 导入器忙：下次再试
-            }
-            status = "import_started";
-            importWatchTicks = 0;
-            importWatchNotified = 0;
-            notifyPlayer(client, "§a[VoxySync] 检测到历史下载数据，正在补全 Voxy 导入（约几分钟，完成后会提示）……");
-            LOGGER.info("[VoxySync] 历史存量补齐导入启动: {} 个区域", count);
+            finishImportOnClient(client, stableRegionDir);
         } catch (Throwable t) {
-            LOGGER.warn("[VoxySync] 历史补齐导入失败", t);
+            LOGGER.warn("[VoxySync] 登录导入检查失败", t);
         }
     }
 
@@ -550,33 +617,49 @@ public final class VoxySyncClient {
                 startSync(client, currentDimensionId(client), false);
             }
         }
-        // 导入阶段状态轮询：每 10 秒查一次导入器是否仍在忙
-        if ("import_started".equals(status) && client.level != null && client.player != null) {
+        // 导入阶段状态机：阶段1=转换（轮询 activeImporters）→ 阶段2=渲染数据写入（等约2分钟）→ 完成提示
+        if ((importStage == 1 || importStage == 2) && client.level != null && client.player != null) {
             importWatchTicks++;
             if (importWatchTicks % 200 == 0) {
                 try {
-                    IVoxyBridge bridge = VoxyBridgeLoader.getBridge();
-                    boolean busy = bridge != null && bridge.isImportBusy(client);
-                    int seconds = importWatchTicks / 20;
-                    if (busy && seconds - importWatchNotified >= 60) {
-                        importWatchNotified = seconds;
-                        client.player.displayClientMessage(
-                                Component.literal("§7[VoxySync] Voxy 导入中（已 " + seconds + " 秒），完成后远处地形即可看见"), false);
-                    } else if (!busy) {
-                        status = "import_done";
-                        // 全量导入完成 → 写入标记，后续会话只导增量
-                        try {
-                            if (stableRegionDir != null && Files.isDirectory(stableRegionDir)) {
-                                Files.writeString(stableRegionDir.resolve(".full-import-done"), "1");
+                    if (importStage == 1) {
+                        IVoxyBridge bridge = VoxyBridgeLoader.getBridge();
+                        boolean busy = bridge != null && bridge.isImportBusy(client);
+                        int seconds = importWatchTicks / 20;
+                        if (busy && seconds - importWatchNotified >= 60) {
+                            importWatchNotified = seconds;
+                            client.player.displayClientMessage(
+                                    Component.literal("§7[VoxySync] 地图数据转换中（已 " + seconds + " 秒）…"), false);
+                        } else if (!busy) {
+                            // 转换完成 → 记录已导入清单（后续登录跳过），进入写入阶段
+                            try {
+                                VoxyImportTracker tracker = new VoxyImportTracker(stableRegionDir);
+                                tracker.markImported(pendingImportNames);
+                                if (pendingImportFirst) {
+                                    java.util.Set<String> all = new java.util.HashSet<>();
+                                    try (var stream = Files.newDirectoryStream(stableRegionDir, "*.mca")) {
+                                        for (Path f : stream) {
+                                            all.add(f.getFileName().toString());
+                                        }
+                                    }
+                                    tracker.markImported(all);
+                                }
+                            } catch (IOException ignored) {
                             }
-                        } catch (IOException ignored) {
+                            importStage = 2;
+                            status = "import_write";
+                            importWatchTicks = 0;
+                            client.player.displayClientMessage(
+                                    Component.literal("§7[VoxySync] 转换完成，渲染数据正在后台写入（约 1-2 分钟）…"), false);
                         }
+                    } else if (importStage == 2 && importWatchTicks >= 240) { // 约 2 分钟宽限
+                        importStage = 3;
+                        status = "import_done";
                         client.player.displayClientMessage(
-                                Component.literal("§a[VoxySync] Voxy 导入完成！请飞到高处看向地平线验证远处地形（若仍无变化请把本消息截图给我）"), false);
+                                Component.literal("§a[VoxySync] ✅ 渲染数据就绪，飞到高处即可看到远处地形！"), false);
                     }
                 } catch (Throwable t) {
                     LOGGER.warn("[VoxySync] 导入状态查询失败", t);
-                    importWatchTicks = 0;
                 }
             }
         }
@@ -613,6 +696,28 @@ public final class VoxySyncClient {
         return client.level.dimension().location().toString();
     }
 
+    /** 手动中止下载并立即渲染已下载部分（/voxystop） */
+    public static void requestStop(Minecraft client) {
+        if (!syncing) {
+            if (client.player != null) {
+                client.player.displayClientMessage(
+                        Component.literal("§7[VoxySync] 当前没有进行中的下载"), false);
+            }
+            return;
+        }
+        manualStop = true;
+        try {
+            if (ClientPlayNetworking.canSend(VoxyPackets.ABORT_SYNC)) {
+                FriendlyByteBuf buf = PacketByteBufs.create();
+                ClientPlayNetworking.send(VoxyPackets.ABORT_SYNC, buf);
+            }
+        } catch (IllegalArgumentException | IllegalStateException ignored) {
+        }
+        syncing = false;
+        status = "stopped";
+        notifyPlayer(client, "§7[VoxySync] 已停止下载，正在渲染已下载的部分…");
+    }
+
     // ---------- 状态查询 ----------
 
     public static boolean isSyncing() {
@@ -629,7 +734,9 @@ public final class VoxySyncClient {
 
     /** 断线/退出时重置自动同步状态（保留 staging 与缓存，实现断点续传） */
     public static void onDisconnect() {
-        catchUpImportAttempted = false;
+        manualStop = false;
+        importStage = 0;
+        pendingImportNames = java.util.List.of();
         requestedDimension = "";
         autoAttemptedDimension = "";
         autoAttempts = 0;

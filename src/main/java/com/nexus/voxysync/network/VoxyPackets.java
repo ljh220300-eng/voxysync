@@ -30,6 +30,8 @@ public final class VoxyPackets {
     public static final ResourceLocation SYNC_PROGRESS = new ResourceLocation("voxysync", "sync_progress");
     public static final ResourceLocation SYNC_COMPLETE = new ResourceLocation("voxysync", "sync_complete");
     public static final ResourceLocation REQUEST_SYNC = new ResourceLocation("voxysync", "request_sync");
+    /** 客户端手动中止当前同步（C2S，空载荷） */
+    public static final ResourceLocation ABORT_SYNC = new ResourceLocation("voxysync", "abort_sync");
 
     /** 字符串字段最大长度（防异常包占满内存） */
     public static final int MAX_STRING = 256;

@@ -94,6 +94,8 @@ public final class VoxySyncHandler {
         ServerPlayNetworking.registerGlobalReceiver(VoxyPackets.SYNC_REQUEST,
                 (server, player, handler, buf, responseSender) ->
                         handleSyncRequest(VoxyPackets.SyncRequestPayload.decode(buf), player));
+        ServerPlayNetworking.registerGlobalReceiver(VoxyPackets.ABORT_SYNC,
+                (server, player, handler, buf, responseSender) -> abortSyncForPlayer(player));
     }
 
     public static void logSecurityWarningIfEnabled() {
@@ -694,6 +696,16 @@ public final class VoxySyncHandler {
         speedLimitCycleStart.remove(playerId);
         // 注意：不要移除 pendingMeta！聚合器在分块到达期间需要跨块存活，
         // 它只应在断开或服务器停止时清理（见 onPlayerDisconnect/cleanup）。
+    }
+
+    /** 客户端手动中止：中断该玩家的同步线程，随后由线程 finally 清理状态 */
+    public static void abortSyncForPlayer(ServerPlayer player) {
+        UUID playerId = player.getUUID();
+        Thread thread = syncThreads.get(playerId);
+        if (thread != null && thread.isAlive()) {
+            LOGGER.info("[VoxySync] {} 手动中止同步", player.getGameProfile().getName());
+            thread.interrupt();
+        }
     }
 
     /** 供命令类调用：给某个玩家预设本次同步模式（request_sync 后由客户端发起请求时消费） */

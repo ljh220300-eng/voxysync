@@ -2,10 +2,14 @@ package com.nexus.voxysync.client;
 
 import com.nexus.voxysync.network.VoxyPackets;
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.Minecraft;
+
+import static net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.argument;
+import static net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.literal;
 
 /**
  * 客户端入口：注册接收器 + 进服/切维度自动同步 + actionbar 进度。
@@ -43,6 +47,14 @@ public class VoxySyncClientMod implements ClientModInitializer {
                 VoxySyncClient.onWorldAvailable(client);
             }
         });
+
+        // /voxystop —— 手动中止下载并立即渲染已下载部分
+        ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) ->
+                dispatcher.register(literal("voxystop")
+                        .executes(ctx -> {
+                            VoxySyncClient.requestStop(ctx.getSource().getClient());
+                            return 1;
+                        })));
     }
 
 }
