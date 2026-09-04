@@ -230,8 +230,9 @@ public final class VoxySyncHandler {
         }
 
         // 每人每天最多自动同步一次（成功即锁定；管理员请求旁路不受限）
-        if (VoxySyncConfig.INSTANCE.syncOncePerDay
-                && !dailyBypassPending.remove(playerId)
+        // 注意：旁路标记必须无条件消费（即便已关闭该配置），避免残留导致日后误信任
+        boolean dailyBypass = dailyBypassPending.remove(playerId);
+        if (VoxySyncConfig.INSTANCE.syncOncePerDay && !dailyBypass
                 && dailyState.isDoneToday(playerId, java.time.LocalDate.now())) {
             sendComplete(player, "", true, "daily_done", 0, 0);
             return;
@@ -282,6 +283,10 @@ public final class VoxySyncHandler {
             sendStart(player, new SyncStartPayload(syncId, dimensionId, regions.size(), totalBytes));
 
             if (regions.isEmpty()) {
+                if (!isPlayerStillValid(player, dimensionId)) {
+                    sendComplete(player, syncId, false, "interrupted", 0, 0);
+                    return;
+                }
                 sendComplete(player, syncId, true, "completed", 0, 0);
                 completedOk = true;
                 return;
@@ -297,6 +302,10 @@ public final class VoxySyncHandler {
                 transferredBytes += region.sizeBytes();
                 sendProgress(player, new SyncProgressPayload(syncId, transferredRegions, regions.size(),
                         transferredBytes, totalBytes, "sending"));
+            }
+            if (!isPlayerStillValid(player, dimensionId)) {
+                sendComplete(player, syncId, false, "interrupted", transferredRegions, transferredBytes);
+                return;
             }
             sendComplete(player, syncId, true, "completed", transferredRegions, transferredBytes);
             completedOk = true;
@@ -754,8 +763,10 @@ public final class VoxySyncHandler {
         speedLimitCycleStart.clear();
         pendingMode.clear();
         pendingMeta.clear();
+        dailyBypassPending.clear();
         activeSyncCount.set(0);
         pendingPartDispatches.set(0);
+        // 注意：不要清 dailyState（每日一次记录需跨重启保留）
     }
 
     private static void cleanupSyncStateNoCount(UUID playerId) {
