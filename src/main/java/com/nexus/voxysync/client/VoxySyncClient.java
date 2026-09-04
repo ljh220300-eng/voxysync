@@ -161,7 +161,7 @@ public final class VoxySyncClient {
             promptAnsweredToday = dim;
             promptAnswerDate = today;
             promptAwaiting = false;
-            notifyPlayer(client, "§7[VoxySync] 今天该维度的同步已完成或已选择跳过，明天将重新询问");
+            notifyPlayer(client, "§7[VoxySync] 今天该维度的同步已处理，明天会再次询问");
             return;
         }
         if (!VoxySyncConfig.INSTANCE.askBeforeSync) {
@@ -176,8 +176,7 @@ public final class VoxySyncClient {
         String dimName = "minecraft:overworld".equals(dim) ? "主世界"
                 : "minecraft:the_nether".equals(dim) ? "地狱"
                 : "minecraft:the_end".equals(dim) ? "末地" : dim;
-        notifyPlayer(client, "§e[VoxySync] 是否开始同步当前维度（" + dimName + "）的地图数据？");
-        notifyPlayer(client, "§7输入 §a/y §7开始同步（今天该维度一次），输入 §c/n §7今天不同步");
+        notifyPlayer(client, "§e[VoxySync] 是否开始同步〈" + dimName + "〉地图？§7输入 §a/y §7同意，§c/n §7今天跳过（每维度每天一次）");
     }
 
     /** /y：开始同步当前询问的维度 */
@@ -199,7 +198,7 @@ public final class VoxySyncClient {
         promptAwaiting = false;
         promptAnsweredToday = promptDim;
         promptAnswerDate = java.time.LocalDate.now().toString();
-        notifyPlayer(client, "§7[VoxySync] 好的，今天不再同步该维度");
+        notifyPlayer(client, "§7[VoxySync] 已选择：今天不同步");
         try {
             if (ClientPlayNetworking.canSend(VoxyPackets.DECLINE)) {
                 VoxyPackets.DeclinePayload payload = new VoxyPackets.DeclinePayload(promptDim);
@@ -245,7 +244,7 @@ public final class VoxySyncClient {
         if (!VoxyBridgeLoader.isVoxyReady(client)) {
             autoAttempts--;
             if (autoAttempts == 0) {
-                client.player.displayClientMessage(Component.literal("§c[VoxySync] Voxy 尚未就绪，可稍后重进或让管理员执行 /voxysync sync"), false);
+                client.player.displayClientMessage(Component.literal("§7[VoxySync] Voxy 暂未就绪，稍后会自动重试"), false);
             }
             return;
         }
@@ -272,16 +271,15 @@ public final class VoxySyncClient {
             return;
         }
         if (!ClientPlayNetworking.canSend(VoxyPackets.SYNC_REQUEST)) {
-            notifyPlayer(client, "§c[VoxySync] 服务器未安装 VoxySync 或未连接");
+            notifyPlayer(client, "§c[VoxySync] 服务器未安装 VoxySync 或当前未连接");
             return;
         }
         if (!VoxyBridgeLoader.isVoxyInstalled()) {
-            notifyPlayer(client, "§7[VoxySync] 未检测到 Voxy 模组，无法同步世界数据"
-                    + "（不影响游戏；安装 Voxy 后自动生效）");
+            // 未安装提示仅在能力探测阶段弹一次（见 tryAutoStart），这里静默返回
             return;
         }
         if (!VoxyBridgeLoader.isVoxyReady(client)) {
-            notifyPlayer(client, "§c[VoxySync] Voxy 尚未就绪（请确认已安装并进入世界后重试）");
+            notifyPlayer(client, "§7[VoxySync] Voxy 尚未就绪，暂时无法同步");
             return;
         }
         if (dim == null) {
@@ -447,7 +445,7 @@ public final class VoxySyncClient {
                     if (cache != null) {
                         cache.save();
                     }
-                    notifyPlayer(client, "§7[VoxySync] 已手动停止下载");
+                    // 停止反馈已由 requestStop 提示，这里只触发渲染
                     try {
                         mergeSessionToStable();
                     } catch (IOException ignored) {
@@ -480,7 +478,7 @@ public final class VoxySyncClient {
             }
             if ("daily_done".equals(payload.message())) {
                 status = "completed";
-                notifyPlayer(client, "§a[VoxySync] 今天的同步已完成，明天会自动同步（带宽保护；管理员可随时强制）");
+                notifyPlayer(client, "§a[VoxySync] 今天该维度的同步已完成，明天会自动同步");
                 syncing = false;
                 return;
             }
@@ -492,7 +490,7 @@ public final class VoxySyncClient {
             }
             if (!assemblies.isEmpty()) {
                 status = "client_io_failed";
-                notifyPlayer(client, "§c[VoxySync] 有区域未收齐，请稍后重试");
+                notifyPlayer(client, "§c[VoxySync] 部分区域未收齐，本次同步中断，稍后会自动继续");
                 syncing = false;
                 if (cache != null) {
                     cache.save();
@@ -574,7 +572,7 @@ public final class VoxySyncClient {
             }
             IVoxyBridge bridge = VoxyBridgeLoader.getBridge();
             if (bridge == null) {
-                notifyPlayer(client, "§c[VoxySync] 未找到 Voxy 桥接，无法导入");
+                notifyPlayer(client, "§c[VoxySync] Voxy 不可用，无法导入数据");
                 status = "import_failed";
                 return;
             }
@@ -612,7 +610,7 @@ public final class VoxySyncClient {
                     + " 个区域，约 " + Math.max(1, pending.size() / 300) + " 分钟）…");
         } catch (Exception e) {
             LOGGER.error("启动 Voxy 导入失败", e);
-            notifyPlayer(client, "§c[VoxySync] 启动 Voxy 导入失败：" + e.getClass().getSimpleName());
+            notifyPlayer(client, "§c[VoxySync] Voxy 导入执行失败（详情见日志）");
             status = "import_failed";
         }
     }
@@ -631,8 +629,7 @@ public final class VoxySyncClient {
                     .orElse("unknown");
             LOGGER.info("[VoxySync] Voxy {} 实际配置: enabled={} enableRendering={} ingestEnabled={} sectionRenderDistance={}",
                     ver, enabled, render, ingest, distance);
-            notifyPlayer(client, "§7[VoxySync] Voxy 配置检查: 渲染=" + (render ? "§a开" : "§c关")
-                    + "§r 总开关=" + (enabled ? "§a开" : "§c关") + "§r LoD距离=" + distance + " 区块");
+            // 配置诊断仅写日志，不打扰玩家（日志等级可查看）
         } catch (Throwable t) {
             LOGGER.warn("[VoxySync] 读取 Voxy 配置失败", t);
         }
@@ -736,7 +733,7 @@ public final class VoxySyncClient {
                         importStage = 3;
                         status = "import_done";
                         client.player.displayClientMessage(
-                                Component.literal("§a[VoxySync] ✅ 渲染数据就绪，飞到高处即可看到远处地形！"), false);
+                                Component.literal("§a[VoxySync] 渲染完成，飞到高处可看远处地形"), false);
                     }
                 } catch (Throwable t) {
                     LOGGER.warn("[VoxySync] 导入状态查询失败", t);
@@ -776,8 +773,7 @@ public final class VoxySyncClient {
         int done = alreadyDone + processedRegions;
         int total = alreadyDone + totalRegions;
         int percent = total > 0 ? done * 100 / total : 0;
-        String text = "§6Voxy 同步: §e" + percent + "%§r (" + done + "/" + total
-                + " 区域，已下载 " + alreadyDone + ")";
+        String text = "§6Voxy 同步: §e" + percent + "%§r (已下载 " + done + "/" + total + " 区域)";
         client.player.displayClientMessage(Component.literal(text), true);
     }
 
