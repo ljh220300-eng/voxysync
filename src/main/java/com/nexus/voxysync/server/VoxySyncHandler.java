@@ -229,6 +229,13 @@ public final class VoxySyncHandler {
                     + "请在 config/voxysync.json 设置 globalSpeedLimitKBps（建议为出口带宽 50%-60%）");
         }
 
+        // 每人每天最多自动同步一次（成功即锁定；管理员请求旁路不受限）
+        if (VoxySyncConfig.INSTANCE.syncOncePerDay
+                && !dailyBypassPending.remove(playerId)
+                && dailyState.isDoneToday(playerId, java.time.LocalDate.now())) {
+            sendComplete(player, "", true, "daily_done", 0, 0);
+            return;
+        }
         String mode = pendingMode.remove(playerId);
         if (mode == null) {
             mode = VoxySyncConfig.INSTANCE.syncMode;
@@ -263,6 +270,7 @@ public final class VoxySyncHandler {
         UUID playerId = player.getUUID();
         int transferredRegions = 0;
         long transferredBytes = 0;
+        boolean completedOk = false;
         try {
             List<RegionFileInfo> regions = collectRegions(dimensionId, regionDir, clientMeta, mode,
                     centerRegionX, centerRegionZ, VoxySyncConfig.INSTANCE.radiusBlocks);
@@ -275,6 +283,7 @@ public final class VoxySyncHandler {
 
             if (regions.isEmpty()) {
                 sendComplete(player, syncId, true, "completed", 0, 0);
+                completedOk = true;
                 return;
             }
 
@@ -290,6 +299,7 @@ public final class VoxySyncHandler {
                         transferredBytes, totalBytes, "sending"));
             }
             sendComplete(player, syncId, true, "completed", transferredRegions, transferredBytes);
+            completedOk = true;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             sendComplete(player, syncId, false, "interrupted", transferredRegions, transferredBytes);
@@ -297,6 +307,11 @@ public final class VoxySyncHandler {
             LOGGER.error("Voxy 同步失败: {}", player.getGameProfile().getName(), e);
             sendComplete(player, syncId, false, "failed", transferredRegions, transferredBytes);
         } finally {
+            // 当天成功完成（含“无需同步”）→ 记录每日同步上限；失败/中止不记录
+            if (completedOk && VoxySyncConfig.INSTANCE.syncOncePerDay) {
+                dailyState.markDone(playerId, java.time.LocalDate.now());
+                LOGGER.info("[VoxySync] {} 今日同步完成（每日一次已锁定）", player.getGameProfile().getName());
+            }
             // 若已有更新的同步线程接管了该玩家，则不要清理它的状态
             if (syncThreads.get(playerId) == Thread.currentThread()) {
                 syncThreads.remove(playerId);
@@ -411,6 +426,11 @@ public final class VoxySyncHandler {
     /** 全局带宽建议提示只发一次 */
     private static final java.util.concurrent.atomic.AtomicBoolean globalLimitAdvised =
             new java.util.concurrent.atomic.AtomicBoolean(false);
+    /** 每人每天一次同步的状态（服务端持久化 config/voxysync-daily.json） */
+    private static final VoxySyncDailyState dailyState = new VoxySyncDailyState(
+            net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir().resolve("voxysync-daily.json"));
+    /** 管理员 /voxysync sync 的当日旁路（消费一次） */
+    private static final Set<UUID> dailyBypassPending = ConcurrentHashMap.newKeySet();
 
     /**
      * 限速：同时满足“每人限速”与“全局总带宽上限”，取更严者等待。
@@ -764,8 +784,9 @@ public final class VoxySyncHandler {
         }
     }
 
-    /** 供命令类调用：向客户端发送"请发起同步"提示 */
+    /** 供命令类调用：向客户端发送"请发起同步"提示（管理员请求，旁路每日一次限制） */
     public static void requestClientSync(ServerPlayer player, String modeHint, String note) {
+        dailyBypassPending.add(player.getUUID());
         MinecraftServer server = player.server;
         if (server == null) {
             return;

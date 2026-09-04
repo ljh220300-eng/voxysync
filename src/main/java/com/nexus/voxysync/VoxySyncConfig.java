@@ -47,6 +47,12 @@ public final class VoxySyncConfig {
          * 但已下载区域的变更不再自动同步，需手动 /voxysync sync 或等新区块）。
          */
         public boolean recheckChangedRegions = true;
+        /**
+         * 每名玩家每天最多自动同步一次（默认 true）：当天首次同步成功（含“无需同步”）后，
+         * 当天不再自动同步，次日自动恢复。管理员 /voxysync sync 仍可强制；失败/手动中止不计数。
+         * 用于彻底避免多人同日反复同步造成的带宽拥堵。
+         */
+        public boolean syncOncePerDay = true;
     }
 
     private VoxySyncConfig() {
@@ -93,5 +99,6 @@ public final class VoxySyncConfig {
         INSTANCE.maxPacketSize = other.maxPacketSize;
         INSTANCE.autoStartOnJoin = other.autoStartOnJoin;
         INSTANCE.recheckChangedRegions = other.recheckChangedRegions;
+        INSTANCE.syncOncePerDay = other.syncOncePerDay;
     }
 }

@@ -411,6 +411,12 @@ public final class VoxySyncClient {
             if (cache != null) {
                 cache.save();
             }
+            if ("daily_done".equals(payload.message())) {
+                status = "completed";
+                notifyPlayer(client, "§a[VoxySync] 今天的同步已完成，明天会自动同步（带宽保护；管理员可随时强制）");
+                syncing = false;
+                return;
+            }
             if (payload.transferredRegions() == 0) {
                 status = "completed";
                 notifyPlayer(client, "§a[VoxySync] 世界数据已是最新，无需同步");
