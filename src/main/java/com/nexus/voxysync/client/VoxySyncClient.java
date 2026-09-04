@@ -132,12 +132,13 @@ public final class VoxySyncClient {
             } else {
                 LOGGER.info("服务器未启用 Voxy 同步（{}）", payload.reason());
             }
-            // 收到能力后，若启用且当前维度还没尝试过 → 自动发起（含重试）
-            scheduleAutoStart(client);
-            // 登录导入：已下载未渲染的立即渲染；已渲染自动跳过
-            if (serverEnabled && !syncing) {
+            // 登录导入先于自动同步：先渲染已下载未渲染的部分（已渲染自动跳过），
+            // 导入与同步可并行（Voxy 单导入器由 makeAndRunIfNone 保证，不会重复）
+            if (serverEnabled) {
                 maybeLoginImport(client);
             }
+            // 收到能力后，若启用且当前维度还没尝试过 → 自动发起（含重试）
+            scheduleAutoStart(client);
         });
     }
 
@@ -570,7 +571,8 @@ public final class VoxySyncClient {
             if (client.level == null || client.player == null) {
                 return;
             }
-            if (syncing || importStage == 1 || importStage == 2) {
+            // 与同步可并行：只避免与“正在进行的导入”冲突（Voxy 单导入器机制天然防重复）
+            if (importStage == 1 || importStage == 2) {
                 return;
             }
             Path dimRoot = client.gameDirectory.toPath().resolve("voxysync").resolve("staging")
