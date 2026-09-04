@@ -32,6 +32,8 @@ public final class VoxyPackets {
     public static final ResourceLocation REQUEST_SYNC = new ResourceLocation("voxysync", "request_sync");
     /** 客户端手动中止当前同步（C2S，空载荷） */
     public static final ResourceLocation ABORT_SYNC = new ResourceLocation("voxysync", "abort_sync");
+    /** 客户端选择今天不同步（C2S） */
+    public static final ResourceLocation DECLINE = new ResourceLocation("voxysync", "decline");
 
     /** 字符串字段最大长度（防异常包占满内存） */
     public static final int MAX_STRING = 256;
@@ -57,15 +59,16 @@ public final class VoxyPackets {
         }
     }
 
-    /** 服务器能力（是否已启用 + 原因/模式说明） */
-    public record CapabilityPayload(boolean enabled, String reason) {
+    /** 服务器能力（是否已启用 + 原因/模式说明 + 当前维度今日是否已处理） */
+    public record CapabilityPayload(boolean enabled, String reason, boolean dailyDoneToday) {
         public void encode(FriendlyByteBuf buf) {
             buf.writeBoolean(this.enabled);
             buf.writeUtf(this.reason, 64);
+            buf.writeBoolean(this.dailyDoneToday);
         }
 
         public static CapabilityPayload decode(FriendlyByteBuf buf) {
-            return new CapabilityPayload(buf.readBoolean(), buf.readUtf(64));
+            return new CapabilityPayload(buf.readBoolean(), buf.readUtf(64), buf.readBoolean());
         }
     }
 
@@ -77,6 +80,17 @@ public final class VoxyPackets {
 
         public static CapabilityRequestPayload decode(FriendlyByteBuf buf) {
             return new CapabilityRequestPayload(buf.readUtf(32));
+        }
+    }
+
+    /** 客户端选择“今天不同步”并通知服务端（C2S） */
+    public record DeclinePayload(String dimensionId) {
+        public void encode(FriendlyByteBuf buf) {
+            buf.writeUtf(this.dimensionId == null ? "" : this.dimensionId, MAX_STRING);
+        }
+
+        public static DeclinePayload decode(FriendlyByteBuf buf) {
+            return new DeclinePayload(buf.readUtf(MAX_STRING));
         }
     }
 

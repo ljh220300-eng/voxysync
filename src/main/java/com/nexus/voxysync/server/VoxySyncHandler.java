@@ -96,6 +96,15 @@ public final class VoxySyncHandler {
                         handleSyncRequest(VoxyPackets.SyncRequestPayload.decode(buf), player));
         ServerPlayNetworking.registerGlobalReceiver(VoxyPackets.ABORT_SYNC,
                 (server, player, handler, buf, responseSender) -> abortSyncForPlayer(player));
+        ServerPlayNetworking.registerGlobalReceiver(VoxyPackets.DECLINE,
+                (server, player, handler, buf, responseSender) -> {
+                    VoxyPackets.DeclinePayload payload = VoxyPackets.DeclinePayload.decode(buf);
+                    if (VoxySyncConfig.INSTANCE.syncOncePerDay && !payload.dimensionId().isBlank()) {
+                        dailyState.markDone(player.getUUID(), payload.dimensionId(), java.time.LocalDate.now());
+                        LOGGER.info("[VoxySync] {} 选择今天不同步 {}（已记录）",
+                                player.getGameProfile().getName(), payload.dimensionId());
+                    }
+                });
     }
 
     public static void logSecurityWarningIfEnabled() {
@@ -124,9 +133,14 @@ public final class VoxySyncHandler {
             }
             boolean enabled = VoxySyncConfig.INSTANCE.enableVoxySync;
             String reason = enabled ? "enabled:" + VoxySyncConfig.INSTANCE.syncMode : "server_disabled";
-            LOGGER.info("[VoxySync] 能力探测回复 {} → enabled={} reason={}",
-                    player.getGameProfile().getName(), enabled, reason);
-            CapabilityPayload payload = new CapabilityPayload(enabled, reason);
+            boolean dailyDone = false;
+            if (enabled && player.level() instanceof ServerLevel level) {
+                dailyDone = dailyState.isDoneToday(player.getUUID(),
+                        level.dimension().location().toString(), java.time.LocalDate.now());
+            }
+            LOGGER.info("[VoxySync] 能力探测回复 {} → enabled={} reason={} dailyDone={}",
+                    player.getGameProfile().getName(), enabled, reason, dailyDone);
+            CapabilityPayload payload = new CapabilityPayload(enabled, reason, dailyDone);
             FriendlyByteBuf buf = PacketByteBufs.create();
             payload.encode(buf);
             ServerPlayNetworking.send(player, VoxyPackets.CAPABILITY, buf);
@@ -233,7 +247,7 @@ public final class VoxySyncHandler {
         // 注意：旁路标记必须无条件消费（即便已关闭该配置），避免残留导致日后误信任
         boolean dailyBypass = dailyBypassPending.remove(playerId);
         if (VoxySyncConfig.INSTANCE.syncOncePerDay && !dailyBypass
-                && dailyState.isDoneToday(playerId, java.time.LocalDate.now())) {
+                && dailyState.isDoneToday(playerId, requestedDimension, java.time.LocalDate.now())) {
             sendComplete(player, "", true, "daily_done", 0, 0);
             return;
         }
@@ -318,8 +332,9 @@ public final class VoxySyncHandler {
         } finally {
             // 当天成功完成（含“无需同步”）→ 记录每日同步上限；失败/中止不记录
             if (completedOk && VoxySyncConfig.INSTANCE.syncOncePerDay) {
-                dailyState.markDone(playerId, java.time.LocalDate.now());
-                LOGGER.info("[VoxySync] {} 今日同步完成（每日一次已锁定）", player.getGameProfile().getName());
+                dailyState.markDone(playerId, dimensionId, java.time.LocalDate.now());
+                LOGGER.info("[VoxySync] {} 今日 {} 同步完成（每维度每日一次已锁定）",
+                        player.getGameProfile().getName(), dimensionId);
             }
             // 若已有更新的同步线程接管了该玩家，则不要清理它的状态
             if (syncThreads.get(playerId) == Thread.currentThread()) {

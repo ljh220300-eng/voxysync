@@ -49,12 +49,24 @@ public class VoxySyncClientMod implements ClientModInitializer {
         });
 
         // /voxystop —— 手动中止下载并立即渲染已下载部分
-        ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) ->
-                dispatcher.register(literal("voxystop")
-                        .executes(ctx -> {
-                            VoxySyncClient.requestStop(ctx.getSource().getClient());
-                            return 1;
-                        })));
+        ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
+            dispatcher.register(literal("voxystop")
+                    .executes(ctx -> {
+                        VoxySyncClient.requestStop(ctx.getSource().getClient());
+                        return 1;
+                    }));
+            // 进服询问的 y/n 应答（仅询问等待时生效）
+            dispatcher.register(literal("y")
+                    .executes(ctx -> {
+                        VoxySyncClient.answerYes(ctx.getSource().getClient());
+                        return 1;
+                    }));
+            dispatcher.register(literal("n")
+                    .executes(ctx -> {
+                        VoxySyncClient.answerNo(ctx.getSource().getClient());
+                        return 1;
+                    }));
+        });
     }
 
 }

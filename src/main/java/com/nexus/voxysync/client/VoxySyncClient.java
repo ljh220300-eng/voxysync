@@ -81,6 +81,11 @@ public final class VoxySyncClient {
     private static volatile boolean importRetryPending;
     private static volatile int importRetryLeft;
     private static volatile int importRetryTimer;
+    /** 询问状态：true=等待 /y 或 /n；记录已询问/已作答的维度（当日） */
+    private static volatile String promptDim = "";
+    private static volatile boolean promptAwaiting;
+    private static volatile String promptAnsweredToday = "";
+    private static volatile String promptAnswerDate = "";
     private static final Map<String, RegionAssembly> assemblies = new ConcurrentHashMap<>();
     private static final ExecutorService VOXY_IO_WORKER = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "voxysync-client-io");
@@ -134,14 +139,76 @@ public final class VoxySyncClient {
             } else {
                 LOGGER.info("服务器未启用 Voxy 同步（{}）", payload.reason());
             }
-            // 登录导入先于自动同步：先渲染已下载未渲染的部分（已渲染自动跳过），
-            // 导入与同步可并行（Voxy 单导入器由 makeAndRunIfNone 保证，不会重复）
+            // 登录导入先于自动同步：先渲染已下载未渲染的部分（已渲染自动跳过）
             if (serverEnabled) {
                 maybeLoginImport(client);
             }
-            // 收到能力后，若启用且当前维度还没尝试过 → 自动发起（含重试）
-            scheduleAutoStart(client);
+            if (!serverEnabled) {
+                return;
+            }
+            enterDimensionFlow(client, payload.dailyDoneToday());
         });
+    }
+
+    /** 进服/切维度后的流程：今日已处理 → 提示；否则询问（/y /n）或按配置自动开始 */
+    private static void enterDimensionFlow(Minecraft client, boolean dailyDoneToday) {
+        String dim = currentDimensionId(client);
+        if (dim == null) {
+            return;
+        }
+        String today = java.time.LocalDate.now().toString();
+        if (dailyDoneToday) {
+            promptAnsweredToday = dim;
+            promptAnswerDate = today;
+            promptAwaiting = false;
+            notifyPlayer(client, "§7[VoxySync] 今天该维度的同步已完成或已选择跳过，明天将重新询问");
+            return;
+        }
+        if (!VoxySyncConfig.INSTANCE.askBeforeSync) {
+            scheduleAutoStart(client);
+            return;
+        }
+        if (dim.equals(promptAnsweredToday) && today.equals(promptAnswerDate)) {
+            return; // 今天已作答且未完成（比如答了 /n 但服务端没记上？已作答则不重复询问）
+        }
+        promptDim = dim;
+        promptAwaiting = true;
+        String dimName = "minecraft:overworld".equals(dim) ? "主世界"
+                : "minecraft:the_nether".equals(dim) ? "地狱"
+                : "minecraft:the_end".equals(dim) ? "末地" : dim;
+        notifyPlayer(client, "§e[VoxySync] 是否开始同步当前维度（" + dimName + "）的地图数据？");
+        notifyPlayer(client, "§7输入 §a/y §7开始同步（今天该维度一次），输入 §c/n §7今天不同步");
+    }
+
+    /** /y：开始同步当前询问的维度 */
+    public static void answerYes(Minecraft client) {
+        if (!promptAwaiting || client.level == null || client.player == null) {
+            return;
+        }
+        promptAwaiting = false;
+        promptAnsweredToday = promptDim;
+        promptAnswerDate = java.time.LocalDate.now().toString();
+        startSync(client, promptDim, false);
+    }
+
+    /** /n：今天该维度不同步（通知服务端记录，避免重复询问） */
+    public static void answerNo(Minecraft client) {
+        if (!promptAwaiting || client.level == null || client.player == null) {
+            return;
+        }
+        promptAwaiting = false;
+        promptAnsweredToday = promptDim;
+        promptAnswerDate = java.time.LocalDate.now().toString();
+        notifyPlayer(client, "§7[VoxySync] 好的，今天不再同步该维度");
+        try {
+            if (ClientPlayNetworking.canSend(VoxyPackets.DECLINE)) {
+                VoxyPackets.DeclinePayload payload = new VoxyPackets.DeclinePayload(promptDim);
+                FriendlyByteBuf buf = PacketByteBufs.create();
+                payload.encode(buf);
+                ClientPlayNetworking.send(VoxyPackets.DECLINE, buf);
+            }
+        } catch (IllegalArgumentException | IllegalStateException ignored) {
+        }
     }
 
     private static void scheduleAutoStart(Minecraft client) {
@@ -762,6 +829,8 @@ public final class VoxySyncClient {
         manualStop = false;
         importStage = 0;
         importRetryPending = false;
+        promptAwaiting = false;
+        promptDim = "";
         importRetryLeft = 0;
         importRetryTimer = 0;
         pendingImportNames = java.util.List.of();

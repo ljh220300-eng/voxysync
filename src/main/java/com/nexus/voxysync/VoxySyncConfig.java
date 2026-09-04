@@ -53,6 +53,11 @@ public final class VoxySyncConfig {
          * 用于彻底避免多人同日反复同步造成的带宽拥堵。
          */
         public boolean syncOncePerDay = true;
+        /**
+         * 进服弹窗询问（默认 true）：进入未处理维度时询问“是否开始同步”，玩家输入 /y 或 /n 决定
+         * 当天该维度是否同步；/n 视为今天不同步（计入每日限制）。false = 直接自动开始。
+         */
+        public boolean askBeforeSync = true;
     }
 
     private VoxySyncConfig() {
@@ -100,5 +105,6 @@ public final class VoxySyncConfig {
         INSTANCE.autoStartOnJoin = other.autoStartOnJoin;
         INSTANCE.recheckChangedRegions = other.recheckChangedRegions;
         INSTANCE.syncOncePerDay = other.syncOncePerDay;
+        INSTANCE.askBeforeSync = other.askBeforeSync;
     }
 }

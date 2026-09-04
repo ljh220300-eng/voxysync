@@ -30,12 +30,17 @@ public final class VoxySyncDailyState {
         load();
     }
 
-    public boolean isDoneToday(UUID playerId, LocalDate today) {
-        return today.toString().equals(done.get(playerId.toString()));
+    /** 键 = 玩家UUID + "/" + 维度id：每个维度每天独立一次（跨维度不互锁） */
+    private static String key(UUID playerId, String dimensionId) {
+        return playerId + "/" + dimensionId;
     }
 
-    public synchronized void markDone(UUID playerId, LocalDate today) {
-        done.put(playerId.toString(), today.toString());
+    public boolean isDoneToday(UUID playerId, String dimensionId, LocalDate today) {
+        return today.toString().equals(done.get(key(playerId, dimensionId)));
+    }
+
+    public synchronized void markDone(UUID playerId, String dimensionId, LocalDate today) {
+        done.put(key(playerId, dimensionId), today.toString());
         save();
     }
 
@@ -48,7 +53,12 @@ public final class VoxySyncDailyState {
                     new com.google.gson.reflect.TypeToken<Map<String, String>>() {}.getType());
             if (loaded != null) {
                 done.clear();
-                done.putAll(loaded);
+                for (Map.Entry<String, String> entry : loaded.entrySet()) {
+                    // 旧格式（仅 UUID 无维度）作废，避免误锁新维度
+                    if (entry.getKey().contains("/")) {
+                        done.put(entry.getKey(), entry.getValue());
+                    }
+                }
             }
         } catch (Exception e) {
             LOGGER.warn("加载 voxy-sync-daily.json 失败，忽略", e);
