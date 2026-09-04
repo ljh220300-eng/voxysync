@@ -150,7 +150,11 @@ public final class VoxySyncClient {
         });
     }
 
-    /** 进服/切维度后的流程：今日已处理 → 提示；否则询问（/y /n）或按配置自动开始 */
+    /**
+     * 进服/切维度后的流程（先判断地图是否已加载过，再决定是否询问）：
+     * ① 今日已处理 → 仅提示；② 已加载过（历史完成过导入）或询问关闭 → 直接自动增量，不询问；
+     * ③ 从未加载过（首次）→ 询问 /y /n。
+     */
     private static void enterDimensionFlow(Minecraft client, boolean dailyDoneToday) {
         String dim = currentDimensionId(client);
         if (dim == null) {
@@ -162,6 +166,14 @@ public final class VoxySyncClient {
             promptAnswerDate = today;
             promptAwaiting = false;
             notifyPlayer(client, "§7[VoxySync] 今天该维度的同步已处理，明天会再次询问");
+            return;
+        }
+        // 已渲染过 = 当天视为已跳过：不询问、不再同步（世界变化明天自动检查）
+        if (hasEverImportedForDim(client)) {
+            promptAnsweredToday = dim;
+            promptAnswerDate = today;
+            promptAwaiting = false;
+            notifyPlayer(client, "§7[VoxySync] 该维度地图已渲染，今天不再同步（明天会自动检查）");
             return;
         }
         if (!VoxySyncConfig.INSTANCE.askBeforeSync) {
@@ -177,6 +189,27 @@ public final class VoxySyncClient {
                 : "minecraft:the_nether".equals(dim) ? "地狱"
                 : "minecraft:the_end".equals(dim) ? "末地" : dim;
         notifyPlayer(client, "§e[VoxySync] 是否开始同步〈" + dimName + "〉地图？§7输入 §a/y §7同意，§c/n §7今天跳过（每维度每天一次）");
+    }
+
+    /** 该维度是否曾经加载过（历史完成过导入）：导入清单有记录或旧全量标记存在 */
+    static boolean hasEverImportedForDim(Minecraft client) {
+        try {
+            String dim = currentDimensionId(client);
+            if (dim == null) {
+                return false;
+            }
+            Path stable = client.gameDirectory.toPath().resolve("voxysync").resolve("staging")
+                    .resolve(safeName(dim)).resolve("region");
+            if (!Files.isDirectory(stable)) {
+                return false;
+            }
+            if (Files.exists(stable.resolve(".full-import-done"))) {
+                return true;
+            }
+            return new VoxyImportTracker(stable).importedCount() > 0;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     /** /y：开始同步当前询问的维度 */
