@@ -1,4 +1,4 @@
-[08:41:51] [Test worker/WARN]: 加载 imported-regions.json 失败，将按全部待导入处理
+[08:47:51] [Test worker/WARN]: 加载 imported-regions.json 失败，将按全部待导入处理
 com.google.gson.JsonSyntaxException: java.lang.IllegalStateException: Expected BEGIN_ARRAY but was STRING at line 1 column 1 path $
 	at com.google.gson.Gson.fromJson(Gson.java:1226) ~[gson-2.10.jar:?]
 	at com.google.gson.Gson.fromJson(Gson.java:1124) ~[gson-2.10.jar:?]
@@ -55,7 +55,7 @@ Caused by: java.lang.IllegalStateException: Expected BEGIN_ARRAY but was STRING 
 	at com.google.gson.internal.bind.CollectionTypeAdapterFactory$Adapter.read(CollectionTypeAdapterFactory.java:61) ~[gson-2.10.jar:?]
 	at com.google.gson.Gson.fromJson(Gson.java:1214) ~[gson-2.10.jar:?]
 	... 48 more
-[08:41:51] [Test worker/WARN]: 加载 voxy-sync-cache.json 失败，忽略该缓存
+[08:47:51] [Test worker/WARN]: 加载 voxy-sync-cache.json 失败，忽略该缓存
 com.google.gson.JsonSyntaxException: com.google.gson.stream.MalformedJsonException: Expected ':' at line 1 column 8 path $.
 	at com.google.gson.Gson.fromJson(Gson.java:1229) ~[gson-2.10.jar:?]
 	at com.google.gson.Gson.fromJson(Gson.java:1124) ~[gson-2.10.jar:?]
