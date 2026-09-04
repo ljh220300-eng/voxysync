@@ -78,7 +78,9 @@ public final class VoxySyncClient {
     /** 当次导入的待导入文件清单与是否首次全量 */
     private static volatile java.util.List<String> pendingImportNames = java.util.List.of();
     private static volatile boolean pendingImportFirst;
-    private static volatile boolean importBroken;
+    private static volatile boolean importRetryPending;
+    private static volatile int importRetryLeft;
+    private static volatile int importRetryTimer;
     private static final Map<String, RegionAssembly> assemblies = new ConcurrentHashMap<>();
     private static final ExecutorService VOXY_IO_WORKER = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "voxysync-client-io");
@@ -521,8 +523,11 @@ public final class VoxySyncClient {
                 target = inc;
             }
             if (!bridge.startImport(client, target)) {
-                notifyPlayer(client, "§e[VoxySync] Voxy 正在忙（已有导入进行中），稍后自动完成");
-                status = "import_busy";
+                // Voxy 引擎未就绪/导入器忙：静默安排重试（每 10 秒，最多 30 次），不抛假“忙”提示
+                LOGGER.info("[VoxySync] Voxy 当前不可用，登录导入延后重试（{} 个待导入）", pending.size());
+                importRetryPending = true;
+                importRetryLeft = 30;
+                status = "import_pending";
                 return;
             }
             status = "import_started";
@@ -654,7 +659,7 @@ public final class VoxySyncClient {
                             client.player.displayClientMessage(
                                     Component.literal("§7[VoxySync] 转换完成，渲染数据正在后台写入（约 1-2 分钟）…"), false);
                         }
-                    } else if (importStage == 2 && importWatchTicks >= 240) { // 约 2 分钟宽限
+                    } else if (importStage == 2 && importWatchTicks >= 2400) { // 约 2 分钟写入宽限（2400 tick）
                         importStage = 3;
                         status = "import_done";
                         client.player.displayClientMessage(
@@ -671,6 +676,18 @@ public final class VoxySyncClient {
                 tryAutoStart(client);
             }
         }
+        // 登录导入延后重试（Voxy 引擎就绪后自动开跑）
+        if (importRetryPending && importStage == 0 && !syncing && client.level != null && client.player != null) {
+            if (++importRetryTimer >= 200) {
+                importRetryTimer = 0;
+                importRetryLeft--;
+                if (importRetryLeft <= 0) {
+                    importRetryPending = false;
+                    return;
+                }
+                maybeLoginImport(client);
+            }
+        }
         if (!syncing || client.player == null) {
             return;
         }
@@ -680,14 +697,14 @@ public final class VoxySyncClient {
         // 未收到 sync_start（totalRegions==0）时不要显示百分比，否则 已就绪/(已就绪+0) = 100% 闪烁
         if (totalRegions <= 0) {
             client.player.displayClientMessage(
-                    Component.literal("§6Voxy 同步: §e正在请求…§r（已就绪 " + alreadyDone + "）"), true);
+                    Component.literal("§6Voxy 同步: §e正在请求…§r（已下载 " + alreadyDone + "）"), true);
             return;
         }
         int done = alreadyDone + processedRegions;
         int total = alreadyDone + totalRegions;
         int percent = total > 0 ? done * 100 / total : 0;
         String text = "§6Voxy 同步: §e" + percent + "%§r (" + done + "/" + total
-                + " 区域，其中已就绪 " + alreadyDone + ")";
+                + " 区域，已下载 " + alreadyDone + ")";
         client.player.displayClientMessage(Component.literal(text), true);
     }
 
@@ -738,6 +755,9 @@ public final class VoxySyncClient {
     public static void onDisconnect() {
         manualStop = false;
         importStage = 0;
+        importRetryPending = false;
+        importRetryLeft = 0;
+        importRetryTimer = 0;
         pendingImportNames = java.util.List.of();
         requestedDimension = "";
         autoAttemptedDimension = "";

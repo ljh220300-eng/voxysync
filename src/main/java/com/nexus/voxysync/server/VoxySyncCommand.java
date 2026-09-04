@@ -50,10 +50,16 @@ public final class VoxySyncCommand {
                                 .then(Commands.argument("blocks", IntegerArgumentType.integer(64, 100000))
                                         .executes(VoxySyncCommand::setRadius)))
                         .then(Commands.literal("sync")
-                                .executes(ctx -> syncSelf(ctx, null))
+                                .executes(ctx -> syncTarget(ctx, null, null))
                                 .then(Commands.argument("mode", StringArgumentType.word())
                                         .suggests(MODE_SUGGESTIONS)
-                                        .executes(ctx -> syncSelf(ctx, StringArgumentType.getString(ctx, "mode")))))
+                                        .executes(ctx -> syncTarget(ctx, StringArgumentType.getString(ctx, "mode"), null))
+                                        .then(Commands.argument("player", StringArgumentType.word())
+                                                .suggests((c, b) -> net.minecraft.commands.SharedSuggestionProvider.suggest(
+                                                        c.getSource().getServer().getPlayerNames(), b)))
+                                                .executes(ctx -> syncTarget(ctx,
+                                                        StringArgumentType.getString(ctx, "mode"),
+                                                        StringArgumentType.getString(ctx, "player")))))
                         .then(Commands.literal("devtest")
                                 .executes(ctx -> devtest(ctx, null, -1))
                                 .then(Commands.argument("mode", StringArgumentType.word())
@@ -120,24 +126,33 @@ public final class VoxySyncCommand {
         return 1;
     }
 
-    private static int syncSelf(CommandContext<CommandSourceStack> ctx, String mode) {
-        ServerPlayer player;
-        try {
-            player = ctx.getSource().getPlayerOrException();
-        } catch (Exception e) {
-            ctx.getSource().sendFailure(Component.literal("§c该命令只能由在线玩家执行"));
-            return 0;
-        }
+    private static int syncTarget(CommandContext<CommandSourceStack> ctx, String mode, String playerName) {
         if (mode != null && !"radius".equals(mode) && !"all".equals(mode)) {
             ctx.getSource().sendFailure(Component.literal("§c模式只能是 radius 或 all"));
             return 0;
+        }
+        ServerPlayer player;
+        if (playerName != null) {
+            player = ctx.getSource().getServer().getPlayerList().getPlayerByName(playerName);
+            if (player == null) {
+                ctx.getSource().sendFailure(Component.literal("§c玩家 " + playerName + " 不在线"));
+                return 0;
+            }
+        } else {
+            try {
+                player = ctx.getSource().getPlayerOrException();
+            } catch (Exception e) {
+                ctx.getSource().sendFailure(Component.literal("§c该命令只能由在线玩家执行，或指定目标玩家名称"));
+                return 0;
+            }
         }
         UUID playerId = player.getUUID();
         if (mode != null) {
             VoxySyncHandler.setPendingMode(playerId, mode);
         }
         VoxySyncHandler.requestClientSync(player, mode, "管理员请求重新同步");
-        ctx.getSource().sendSuccess(() -> Component.literal("§6[VoxySync]§r 已通知客户端重新同步"
+        ctx.getSource().sendSuccess(() -> Component.literal("§6[VoxySync]§r 已通知 "
+                + player.getGameProfile().getName() + " 重新同步"
                 + (mode != null ? "（模式: " + mode + "）" : "（按配置: " + VoxySyncConfig.INSTANCE.syncMode + "）")), true);
         return 1;
     }
