@@ -223,6 +223,11 @@ public final class VoxySyncHandler {
             sendComplete(player, "", false, "server_busy", 0, 0);
             return;
         }
+        if (activeSyncCount.get() + 1 >= 2 && VoxySyncConfig.INSTANCE.globalSpeedLimitKBps <= 0
+                && globalLimitAdvised.compareAndSet(false, true)) {
+            LOGGER.warn("[VoxySync] 检测到多人并发同步但未设置全局带宽上限；如遇多玩家卡顿/掉线，"
+                    + "请在 config/voxysync.json 设置 globalSpeedLimitKBps（建议为出口带宽 50%-60%）");
+        }
 
         String mode = pendingMode.remove(playerId);
         if (mode == null) {
@@ -397,25 +402,67 @@ public final class VoxySyncHandler {
         return Math.max(16 * 1024, maxPacketSize - 2048);
     }
 
-    private static boolean applySpeedLimit(int bytesSent, ServerPlayer player) throws InterruptedException {
-        int limitKBps = VoxySyncConfig.INSTANCE.speedLimitKBps;
-        if (limitKBps <= 0 || bytesSent <= 0) {
-            return isPlayerStillValid(player);
-        }
-        UUID playerId = player.getUUID();
-        long cycleStart = speedLimitCycleStart.getOrDefault(playerId, System.currentTimeMillis());
-        long totalBytes = speedLimitBytesSent.getOrDefault(playerId, 0L) + bytesSent;
-        speedLimitCycleStart.put(playerId, cycleStart);
-        speedLimitBytesSent.put(playerId, totalBytes);
+    /** 全局带宽闸门状态（所有玩家合计） */
+    private static final Object GLOBAL_LIMIT_LOCK = new Object();
+    private static long globalLimitCycleStart;
+    private static long globalLimitBytesSent;
+    /** 全局带宽建议提示只发一次 */
+    private static final java.util.concurrent.atomic.AtomicBoolean globalLimitAdvised =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
 
-        long actualTimeMs = System.currentTimeMillis() - cycleStart;
-        long expectedTimeMs = (totalBytes * 1000L) / (limitKBps * 1024L);
-        if (actualTimeMs >= expectedTimeMs || actualTimeMs > 1000) {
-            speedLimitCycleStart.put(playerId, System.currentTimeMillis());
-            speedLimitBytesSent.put(playerId, 0L);
+    /**
+     * 限速：同时满足“每人限速”与“全局总带宽上限”，取更严者等待。
+     * 全局闸门防止多人并发同步把服务器出口挤爆（2026-09-04 双流事故根因）。
+     */
+    private static boolean applySpeedLimit(int bytesSent, ServerPlayer player) throws InterruptedException {
+        if (bytesSent <= 0) {
             return isPlayerStillValid(player);
         }
-        long waitMs = expectedTimeMs - actualTimeMs;
+        int limitKBps = VoxySyncConfig.INSTANCE.speedLimitKBps;
+        int globalKBps = VoxySyncConfig.INSTANCE.globalSpeedLimitKBps;
+        if (limitKBps <= 0 && globalKBps <= 0) {
+            return isPlayerStillValid(player);
+        }
+        long waitMs = 0;
+        // —— 每人限速 ——
+        if (limitKBps > 0) {
+            UUID playerId = player.getUUID();
+            long cycleStart = speedLimitCycleStart.getOrDefault(playerId, System.currentTimeMillis());
+            long totalBytes = speedLimitBytesSent.getOrDefault(playerId, 0L) + bytesSent;
+            speedLimitCycleStart.put(playerId, cycleStart);
+            speedLimitBytesSent.put(playerId, totalBytes);
+
+            long actualTimeMs = System.currentTimeMillis() - cycleStart;
+            long expectedTimeMs = (totalBytes * 1000L) / (limitKBps * 1024L);
+            if (actualTimeMs >= expectedTimeMs || actualTimeMs > 1000) {
+                speedLimitCycleStart.put(playerId, System.currentTimeMillis());
+                speedLimitBytesSent.put(playerId, 0L);
+            } else {
+                waitMs = Math.max(waitMs, expectedTimeMs - actualTimeMs);
+            }
+        }
+        // —— 全局总带宽闸门（所有玩家合计） ——
+        if (globalKBps > 0) {
+            synchronized (GLOBAL_LIMIT_LOCK) {
+                long now = System.currentTimeMillis();
+                if (globalLimitCycleStart == 0 || now - globalLimitCycleStart > 1000) {
+                    globalLimitCycleStart = now;
+                    globalLimitBytesSent = 0;
+                }
+                globalLimitBytesSent += bytesSent;
+                long actual = now - globalLimitCycleStart;
+                long expected = (globalLimitBytesSent * 1000L) / (globalKBps * 1024L);
+                if (actual >= expected || actual > 1000) {
+                    globalLimitCycleStart = now;
+                    globalLimitBytesSent = 0;
+                } else {
+                    waitMs = Math.max(waitMs, expected - actual);
+                }
+            }
+        }
+        if (waitMs <= 0) {
+            return isPlayerStillValid(player);
+        }
         long waitStart = System.currentTimeMillis();
         while (System.currentTimeMillis() - waitStart < waitMs) {
             if (!isPlayerStillValid(player)) {

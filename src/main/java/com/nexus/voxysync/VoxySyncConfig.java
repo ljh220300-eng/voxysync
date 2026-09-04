@@ -33,6 +33,12 @@ public final class VoxySyncConfig {
         public String syncMode = "radius";
         public int radiusBlocks = 2000;
         public int speedLimitKBps = 1024;
+        /**
+         * 全局总带宽闸门（KB/s）：所有玩家同步流量合计上限；0 = 不限制（默认）。
+         * 多人服务器建议设置：出口带宽通常 10Mbps≈1024KB/s 的 50%-60%（如 512-640），
+         * 可避免同步流与游戏流抢带宽导致全员卡顿/掉线。默认不硬编码，由服主决定。
+         */
+        public int globalSpeedLimitKBps = 0;
         public int maxPacketSize = 262144;
         public boolean autoStartOnJoin = true;
     }
@@ -77,6 +83,7 @@ public final class VoxySyncConfig {
         INSTANCE.syncMode = other.syncMode;
         INSTANCE.radiusBlocks = other.radiusBlocks;
         INSTANCE.speedLimitKBps = other.speedLimitKBps;
+        INSTANCE.globalSpeedLimitKBps = other.globalSpeedLimitKBps;
         INSTANCE.maxPacketSize = other.maxPacketSize;
         INSTANCE.autoStartOnJoin = other.autoStartOnJoin;
     }

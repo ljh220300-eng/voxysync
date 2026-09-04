@@ -74,7 +74,8 @@ public final class VoxySyncCommand {
         ctx.getSource().sendSuccess(() -> Component.literal("§6[VoxySync]§r 状态：")
                 .append("\n  · 同步开关: " + (cfg.enableVoxySync ? "§a开启§r" : "§c关闭§r"))
                 .append("\n  · 模式: " + modeText)
-                .append("\n  · 限速: " + cfg.speedLimitKBps + " KB/s（≤0 不限速）")
+                .append("\n  · 限速: " + cfg.speedLimitKBps + " KB/s（≤0 不限速）"
+                        + "；全局总闸门: " + cfg.globalSpeedLimitKBps + " KB/s（≤0 不限）")
                 .append("\n  · 分片大小: " + cfg.maxPacketSize + " 字节")
                 .append("\n  · 进行中的同步: " + VoxySyncHandler.getActiveSyncCount() + " 个")
                 .append("\n  · 配置: config/voxysync.json"), true);
